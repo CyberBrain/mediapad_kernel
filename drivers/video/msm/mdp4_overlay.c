@@ -215,6 +215,8 @@ int mdp4_overlay_iommu_map_buf(int mem_id,
 	struct ion_handle **srcp_ihdl)
 {
 	struct mdp4_iommu_pipe_info *iom;
+	unsigned long size = 0;
+	int ret;
 
 	if (!display_iclient)
 		return -EINVAL;
@@ -224,15 +226,23 @@ int mdp4_overlay_iommu_map_buf(int mem_id,
 		pr_err("ion_import_dma_buf() failed\n");
 		return PTR_ERR(*srcp_ihdl);
 	}
-	pr_debug("%s(): ion_hdl %p, ion_buf %p\n", __func__, *srcp_ihdl,
-		ion_share(display_iclient, *srcp_ihdl));
+
+	ret = ion_handle_get_size(display_iclient, *srcp_ihdl, &size);
+	if (ret)
+		pr_err("ion_handle_get_size failed with ret %d\n", ret);
+	else
+		size *= 2;
+
+	pr_debug("%s(): ion_hdl %p, size 0x%lx\n", __func__,
+		*srcp_ihdl, size);
 	pr_debug("mixer %u, pipe %u, plane %u\n", pipe->mixer_num,
 		pipe->pipe_ndx, plane);
 	if (ion_map_iommu(display_iclient, *srcp_ihdl,
-		DISPLAY_DOMAIN, GEN_POOL, SZ_4K, 0, start,
+		DISPLAY_DOMAIN, GEN_POOL, SZ_4K, size, start,
 		len, 0, ION_IOMMU_UNMAP_DELAYED)) {
 		ion_free(display_iclient, *srcp_ihdl);
-		pr_err("ion_map_iommu() failed\n");
+		pr_err("%s(): ion_map_iommu() failed\n",
+			__func__);
 		return -EINVAL;
 	}
 
@@ -2194,6 +2204,8 @@ void mdp4_overlay_pipe_free(struct mdp4_overlay_pipe *pipe)
 
 }
 
+static int mdp4_calc_pipe_mdp_clk(struct msm_fb_data_type *mfd, struct mdp4_overlay_pipe *pipe);
+
 static int mdp4_overlay_req2pipe(struct mdp_overlay *req, int mixer,
 			struct mdp4_overlay_pipe **ppipe,
 			struct msm_fb_data_type *mfd)
@@ -2436,6 +2448,22 @@ static int mdp4_overlay_req2pipe(struct mdp_overlay *req, int mixer,
 	pipe->transp = req->transp_mask;
 
 	pipe->flags = req->flags;
+
+#ifdef CONFIG_ARCH_MSM8X60
+	/* If we're composing with MDP and we suddenly need a really outrageous clockrate,
+	 * just fail so that userspace switches to the GPU. If we don't do this, MDP will
+	 * switch to BLT mode, but it locks up and we never get any interrupts. Only seems to
+	 * happen on 8660 devices, so ifdeffed this appropriately. */
+	if (pipe->flags & MDP_BACKEND_COMPOSITION && req->id == MSMFB_NEW_REQUEST) {
+		mdp4_calc_pipe_mdp_clk(mfd, pipe);
+		if (pipe->req_clk > mdp_max_clk) {
+			pr_err("%s: high clock rate requested while composing, switch to GPU! req=%d max=%d",
+							__func__, pipe->req_clk, mdp_max_clk);
+			mdp4_overlay_pipe_free(pipe);
+			return -EINVAL;
+		}
+	}
+#endif
 
 	*ppipe = pipe;
 
@@ -3529,14 +3557,13 @@ static struct {
 	},
 };
 
-static int iommu_enabled;
-
 void mdp4_iommu_attach(void)
 {
+	static int done;
 	struct iommu_domain *domain;
 	int i;
 
-	if (!iommu_enabled) {
+	if (!done) {
 		for (i = 0; i < ARRAY_SIZE(msm_iommu_ctx_names); i++) {
 			int domain_idx;
 			struct device *ctx = msm_iommu_get_ctx(
@@ -3559,38 +3586,7 @@ void mdp4_iommu_attach(void)
 				continue;
 			}
 		}
-		pr_debug("Attached MDP IOMMU device\n");
-		iommu_enabled = 1;
-	}
-}
-
-void mdp4_iommu_detach(void)
-{
-	struct iommu_domain *domain;
-	int i;
-
-	if (!mdp_check_suspended() || mdp4_extn_disp)
-		return;
-
-	if (iommu_enabled) {
-		for (i = 0; i < ARRAY_SIZE(msm_iommu_ctx_names); i++) {
-			int domain_idx;
-			struct device *ctx = msm_iommu_get_ctx(
-				msm_iommu_ctx_names[i].name);
-
-			if (!ctx)
-				continue;
-
-			domain_idx = msm_iommu_ctx_names[i].domain;
-
-			domain = msm_get_iommu_domain(domain_idx);
-			if (!domain)
-				continue;
-
-			iommu_detach_device(domain,	ctx);
-		}
-		pr_debug("Detached MDP IOMMU device\n");
-		iommu_enabled = 0;
+		done = 1;
 	}
 }
 
