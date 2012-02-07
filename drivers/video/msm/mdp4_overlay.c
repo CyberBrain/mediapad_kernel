@@ -542,14 +542,9 @@ static void mdp4_scale_setup(struct mdp4_overlay_pipe *pipe)
 		if (pipe->dst_w > pipe->src_w * upscale_max)
 			return;
 		pipe->op_mode |= MDP4_OP_SCALEX_EN;
-
-
-
-		 if (pipe->pipe_type == OVERLAY_TYPE_VIDEO) { 
-			//if (pipe->alpha_enable && pipe->dst_w > pipe->src_w)
-			if (pipe->flags & MDP_BACKEND_COMPOSITION && 
-		 pipe->alpha_enable && pipe->dst_w > pipe->src_w) 
-
+		if (pipe->pipe_type == OVERLAY_TYPE_VIDEO) {
+			if (pipe->flags & MDP_BACKEND_COMPOSITION &&
+				pipe->alpha_enable && pipe->dst_w > pipe->src_w)
 				pipe->op_mode |= MDP4_OP_SCALEX_PIXEL_RPT;
 			else if (pipe->dst_w <= (pipe->src_w / 4))
 				pipe->op_mode |= MDP4_OP_SCALEX_MN_PHASE;
@@ -914,9 +909,9 @@ int mdp4_overlay_format2pipe(struct mdp4_overlay_pipe *pipe)
 		pipe->unpack_tight = 1;
 		pipe->unpack_align_msb = 0;
 		pipe->unpack_count = 2;
-                pipe->element2 = C2_R_Cr;       /* R */
-                pipe->element1 = C0_G_Y;        /* G */
-                pipe->element0 = C1_B_Cb;       /* B */
+		pipe->element2 = C1_B_Cb;	/* B */
+		pipe->element1 = C0_G_Y;	/* G */
+		pipe->element0 = C2_R_Cr;	/* R */
 		pipe->bpp = 3;	/* 3 bpp */
 		break;
 	case MDP_BGR_565:
@@ -946,10 +941,10 @@ int mdp4_overlay_format2pipe(struct mdp4_overlay_pipe *pipe)
 		pipe->unpack_tight = 1;
 		pipe->unpack_align_msb = 0;
 		pipe->unpack_count = 3;
-	        pipe->element3 = C3_ALPHA;      /* alpha */
-                pipe->element2 = C2_R_Cr;       /* R */
-                pipe->element1 = C0_G_Y;        /* G */
-                pipe->element0 = C1_B_Cb;       /* B */
+		pipe->element3 = C1_B_Cb;	/* B */
+		pipe->element2 = C0_G_Y;	/* G */
+		pipe->element1 = C2_R_Cr;	/* R */
+		pipe->element0 = C3_ALPHA;	/* alpha */
 		pipe->bpp = 4;		/* 4 bpp */
 		break;
 	case MDP_ARGB_8888:
@@ -963,10 +958,10 @@ int mdp4_overlay_format2pipe(struct mdp4_overlay_pipe *pipe)
 		pipe->unpack_tight = 1;
 		pipe->unpack_align_msb = 0;
 		pipe->unpack_count = 3;
-                pipe->element3 = C3_ALPHA;      /* alpha */
-                pipe->element2 = C2_R_Cr;       /* R */
-                pipe->element1 = C0_G_Y;        /* G */
-                pipe->element0 = C1_B_Cb;       /* B */
+		pipe->element3 = C1_B_Cb;	/* B */
+		pipe->element2 = C0_G_Y;	/* G */
+		pipe->element1 = C2_R_Cr;	/* R */
+		pipe->element0 = C3_ALPHA;	/* alpha */
 		pipe->bpp = 4;		/* 4 bpp */
 		break;
 	case MDP_RGBA_8888:
@@ -1054,37 +1049,35 @@ int mdp4_overlay_format2pipe(struct mdp4_overlay_pipe *pipe)
 		pipe->unpack_tight = 1;
 		pipe->unpack_align_msb = 0;
 		pipe->unpack_count = 1;		/* 2 */
-                pipe->element3 = C0_G_Y;        /* not used */
-                pipe->element2 = C0_G_Y;        /* not used */
 		if (pipe->src_format == MDP_Y_CRCB_H2V1) {
-			pipe->element1 = C2_R_Cr;       /* R */
-                        pipe->element0 = C1_B_Cb;       /* B */
+			pipe->element1 = C1_B_Cb;
+			pipe->element0 = C2_R_Cr;
 			pipe->chroma_sample = MDP4_CHROMA_H2V1;
 		} else if (pipe->src_format == MDP_Y_CRCB_H1V1) {
-		        pipe->element1 = C2_R_Cr;       /* R */
-                        pipe->element0 = C1_B_Cb;       /* B */
+			pipe->element1 = C1_B_Cb;
+			pipe->element0 = C2_R_Cr;
 			if (pipe->src_width > YUV_444_MAX_WIDTH)
 				pipe->chroma_sample = MDP4_CHROMA_H1V2;
 			else
 				pipe->chroma_sample = MDP4_CHROMA_RGB;
 		} else if (pipe->src_format == MDP_Y_CBCR_H2V1) {
-			pipe->element1 = C1_B_Cb;       /* B */
-                        pipe->element0 = C2_R_Cr;       /* R */
+			pipe->element1 = C2_R_Cr;
+			pipe->element0 = C1_B_Cb;
 			pipe->chroma_sample = MDP4_CHROMA_H2V1;
 		} else if (pipe->src_format == MDP_Y_CBCR_H1V1) {
-			pipe->element1 = C1_B_Cb;       /* B */
-                        pipe->element0 = C2_R_Cr;       /* R */
+			pipe->element1 = C2_R_Cr;
+			pipe->element0 = C1_B_Cb;
 			if (pipe->src_width > YUV_444_MAX_WIDTH)
 				pipe->chroma_sample = MDP4_CHROMA_H1V2;
 			else
 				pipe->chroma_sample = MDP4_CHROMA_RGB;
 		} else if (pipe->src_format == MDP_Y_CRCB_H2V2) {
-                        pipe->element1 = C2_R_Cr;       /* R */
-                        pipe->element0 = C1_B_Cb;       /* B */
+			pipe->element1 = C1_B_Cb;
+			pipe->element0 = C2_R_Cr;
 			pipe->chroma_sample = MDP4_CHROMA_420;
 		} else if (pipe->src_format == MDP_Y_CBCR_H2V2) {
-			pipe->element1 = C1_B_Cb;       /* B */
-                        pipe->element0 = C2_R_Cr;       /* R */
+			pipe->element1 = C2_R_Cr;
+			pipe->element0 = C1_B_Cb;
 			pipe->chroma_sample = MDP4_CHROMA_420;
 		}
 		pipe->bpp = 2;	/* 2 bpp */
@@ -1101,15 +1094,13 @@ int mdp4_overlay_format2pipe(struct mdp4_overlay_pipe *pipe)
 		pipe->unpack_tight = 1;
 		pipe->unpack_align_msb = 0;
 		pipe->unpack_count = 1;		/* 2 */
-                pipe->element3 = C0_G_Y;        /* not used */
-                pipe->element2 = C0_G_Y;        /* not used */
 		if (pipe->src_format == MDP_Y_CRCB_H2V2_TILE) {
-                        pipe->element1 = C2_R_Cr;       /* R */
-                        pipe->element0 = C1_B_Cb;       /* B */
-                        pipe->chroma_sample = MDP4_CHROMA_420;
-               } else if (pipe->src_format == MDP_Y_CBCR_H2V2_TILE) {
 			pipe->element1 = C1_B_Cb;	/* B */
 			pipe->element0 = C2_R_Cr;	/* R */
+			pipe->chroma_sample = MDP4_CHROMA_420;
+		} else if (pipe->src_format == MDP_Y_CBCR_H2V2_TILE) {
+			pipe->element1 = C2_R_Cr;	/* R */
+			pipe->element0 = C1_B_Cb;	/* B */
 			pipe->chroma_sample = MDP4_CHROMA_420;
 		}
 		pipe->bpp = 2;	/* 2 bpp */
@@ -2459,8 +2450,9 @@ int mdp4_overlay_set(struct fb_info *info, struct mdp_overlay *req)
 		return -ENODEV;
 	}
 
-	if (!mfd->panel_power_on)	/* suspended */
-		return -EPERM;
+	if (info->node != 0 || mfd->cont_splash_done)	/* primary */
+		if (!mfd->panel_power_on)		/* suspended */
+			return -EPERM;
 
 	if (req->src.format == MDP_FB_FORMAT)
 		req->src.format = mfd->fb_imgType;
@@ -3050,3 +3042,112 @@ void mdp4_iommu_attach(void)
 		done = 1;
 	}
 }
+
+int mdp4_v4l2_overlay_set(struct fb_info *info, struct mdp_overlay *req,
+	struct mdp4_overlay_pipe **ppipe)
+{
+	struct mdp4_overlay_pipe *pipe;
+	int err;
+	struct msm_fb_data_type *mfb = info->par;
+
+	req->z_order = 0;
+	req->id = MSMFB_NEW_REQUEST;
+	req->is_fg = false;
+	req->alpha = 0xff;
+	err = mdp4_overlay_req2pipe(req, MDP4_MIXER0, &pipe, mfb);
+	if (err < 0) {
+		pr_err("%s:Could not allocate MDP overlay pipe\n", __func__);
+		return err;
+	}
+
+	mdp4_mixer_blend_setup(pipe);
+	*ppipe = pipe;
+
+	return 0;
+}
+
+void mdp4_v4l2_overlay_clear(struct mdp4_overlay_pipe *pipe)
+{
+	mdp4_mixer_stage_down(pipe);
+	mdp4_overlay_pipe_free(pipe);
+}
+
+int mdp4_v4l2_overlay_play(struct fb_info *info, struct mdp4_overlay_pipe *pipe,
+	unsigned long srcp0_addr, unsigned long srcp1_addr,
+	unsigned long srcp2_addr)
+{
+	struct msm_fb_data_type *mfd = info->par;
+	int err;
+
+	if (mutex_lock_interruptible(&mfd->dma->ov_mutex))
+		return -EINTR;
+
+	switch (pipe->src_format) {
+	case MDP_Y_CR_CB_H2V2:
+		/* YUV420 */
+		pipe->srcp0_addr = srcp0_addr;
+		pipe->srcp0_ystride = pipe->src_width;
+		/*
+		 * For YUV420, the luma plane is 1 byte per pixel times
+		 * num of pixels in the image Also, the planes are
+		 * switched in MDP, srcp2 is actually first chroma plane
+		 */
+		pipe->srcp2_addr = srcp1_addr ? srcp1_addr :
+		pipe->srcp0_addr + (pipe->src_width * pipe->src_height);
+		pipe->srcp2_ystride = pipe->src_width/2;
+		/*
+		 * The chroma planes are half the size of the luma
+		 * planes
+		 */
+		pipe->srcp1_addr = srcp2_addr ? srcp2_addr :
+		pipe->srcp2_addr +
+			(pipe->src_width * pipe->src_height / 4);
+		pipe->srcp1_ystride = pipe->src_width/2;
+		break;
+	case MDP_Y_CRCB_H2V2:
+		/* NV12 */
+		pipe->srcp0_addr = srcp0_addr;
+		pipe->srcp0_ystride = pipe->src_width;
+		pipe->srcp1_addr = srcp1_addr ? srcp1_addr :
+		pipe->srcp0_addr +
+			(pipe->src_width * pipe->src_height);
+		pipe->srcp1_ystride = pipe->src_width;
+		break;
+	default:
+		pr_err("%s: format (%u) is not supported\n", __func__,
+				pipe->src_format);
+		err = -EINVAL;
+		goto done;
+	}
+
+	pr_debug("%s: pipe ndx=%d stage=%d format=%x\n", __func__,
+		pipe->pipe_ndx, pipe->mixer_stage, pipe->src_format);
+
+	if (pipe->pipe_type == OVERLAY_TYPE_VIDEO)
+		mdp4_overlay_vg_setup(pipe);
+	else
+		mdp4_overlay_rgb_setup(pipe);
+
+	mdp4_mixer_stage_up(pipe);
+
+	if (ctrl->panel_mode & MDP4_PANEL_LCDC) {
+		mdp4_overlay_reg_flush(pipe, 1);
+		mdp4_overlay_lcdc_vsync_push(mfd, pipe);
+	} else {
+#ifdef CONFIG_FB_MSM_MIPI_DSI
+		if (ctrl->panel_mode & MDP4_PANEL_DSI_CMD) {
+			mdp4_dsi_cmd_dma_busy_wait(mfd);
+			mdp4_dsi_cmd_kickoff_video(mfd, pipe);
+		}
+#else
+		if (ctrl->panel_mode & MDP4_PANEL_MDDI) {
+			mdp4_mddi_dma_busy_wait(mfd);
+			mdp4_mddi_kickoff_video(mfd, pipe);
+		}
+#endif
+	}
+done:
+	mutex_unlock(&mfd->dma->ov_mutex);
+	return err;
+}
+

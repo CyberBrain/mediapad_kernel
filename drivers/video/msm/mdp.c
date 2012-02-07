@@ -50,6 +50,7 @@ static struct clk *mdp_pclk;
 static struct clk *mdp_lut_clk;
 int mdp_rev;
 
+static struct platform_device *mdp_init_pdev;
 static struct regulator *footswitch;
 static unsigned int mdp_footswitch_on;
 
@@ -1316,9 +1317,6 @@ void mdp_pipe_kickoff(uint32 term, struct msm_fb_data_type *mfd)
 		/* DMA update timestamp */
 		mdp_dma2_last_update_time = ktime_get_real();
 		/* let's turn on DMA2 block */
-#if 0
-		mdp_pipe_ctrl(MDP_DMA2_BLOCK, MDP_BLOCK_POWER_ON, FALSE);
-#endif
 #ifdef CONFIG_FB_MSM_MDP22
 		outpdw(MDP_CMD_DEBUG_ACCESS_BASE + 0x0044, 0x0);/* start DMA */
 #else
@@ -1367,6 +1365,7 @@ void mdp_pipe_kickoff(uint32 term, struct msm_fb_data_type *mfd)
 	}
 #endif
 }
+
 static int mdp_clk_rate;
 static struct platform_device *pdev_list[MSM_FB_MAX_DEV_LIST];
 static int pdev_list_cnt;
@@ -1484,7 +1483,7 @@ void mdp_pipe_ctrl(MDP_BLOCK_TYPE block, MDP_BLOCK_POWER_STATE state,
 				}
 				if (mdp_clk != NULL) {
 					mdp_clk_rate = clk_get_rate(mdp_clk);
-					clk_disable(mdp_clk);
+					clk_disable_unprepare(mdp_clk);
 					if (mdp_hw_revision <=
 						MDP4_REVISION_V2_1 &&
 						mdp_clk_rate > 122880000) {
@@ -1494,11 +1493,11 @@ void mdp_pipe_ctrl(MDP_BLOCK_TYPE block, MDP_BLOCK_POWER_STATE state,
 					MSM_FB_DEBUG("MDP CLK OFF\n");
 				}
 				if (mdp_pclk != NULL) {
-					clk_disable(mdp_pclk);
+					clk_disable_unprepare(mdp_pclk);
 					MSM_FB_DEBUG("MDP PCLK OFF\n");
 				}
 				if (mdp_lut_clk != NULL)
-					clk_disable(mdp_lut_clk);
+					clk_disable_unprepare(mdp_lut_clk);
 			} else {
 				/* send workqueue to turn off mdp power */
 				queue_delayed_work(mdp_pipe_ctrl_wq,
@@ -1522,15 +1521,15 @@ void mdp_pipe_ctrl(MDP_BLOCK_TYPE block, MDP_BLOCK_POWER_STATE state,
 					clk_set_rate(mdp_clk,
 						 mdp_clk_rate);
 				}
-				clk_enable(mdp_clk);
+				clk_prepare_enable(mdp_clk);
 				MSM_FB_DEBUG("MDP CLK ON\n");
 			}
 			if (mdp_pclk != NULL) {
-				clk_enable(mdp_pclk);
+				clk_prepare_enable(mdp_pclk);
 				MSM_FB_DEBUG("MDP PCLK ON\n");
 			}
 			if (mdp_lut_clk != NULL)
-				clk_enable(mdp_lut_clk);
+				clk_prepare_enable(mdp_lut_clk);
 			mdp_vsync_clk_enable();
 		}
 		up(&mdp_pipe_ctrl_mutex);
@@ -2037,7 +2036,8 @@ unsigned long mdp_perf_level2clk_rate(uint32 perf_level)
 	return clk_rate;
 }
 
-static int mdp_irq_clk_setup(void)
+static int mdp_irq_clk_setup(struct platform_device *pdev,
+	char cont_splashScreen)
 {
 	int ret;
 
@@ -2060,7 +2060,7 @@ static int mdp_irq_clk_setup(void)
 		mdp_footswitch_on = 1;
 	}
 
-	mdp_clk = clk_get(NULL, "mdp_clk");
+	mdp_clk = clk_get(&pdev->dev, "core_clk");
 	if (IS_ERR(mdp_clk)) {
 		ret = PTR_ERR(mdp_clk);
 		printk(KERN_ERR "can't get mdp_clk error:%d!\n", ret);
@@ -2068,12 +2068,12 @@ static int mdp_irq_clk_setup(void)
 		return ret;
 	}
 
-	mdp_pclk = clk_get(NULL, "mdp_pclk");
+	mdp_pclk = clk_get(&pdev->dev, "iface_clk");
 	if (IS_ERR(mdp_pclk))
 		mdp_pclk = NULL;
 
 	if (mdp_rev == MDP_REV_42) {
-		mdp_lut_clk = clk_get(NULL, "lut_mdp");
+		mdp_lut_clk = clk_get(&pdev->dev, "lut_clk");
 		if (IS_ERR(mdp_lut_clk)) {
 			ret = PTR_ERR(mdp_lut_clk);
 			pr_err("can't get mdp_clk error:%d!\n", ret);
@@ -2090,12 +2090,18 @@ static int mdp_irq_clk_setup(void)
 	 * mdp_clk should greater than mdp_pclk always
 	 */
 	if (mdp_pdata && mdp_pdata->mdp_core_clk_rate) {
+		if (cont_splashScreen)
+			mdp_clk_rate = clk_get_rate(mdp_clk);
+		else
+			mdp_clk_rate = mdp_pdata->mdp_core_clk_rate;
+
 		mutex_lock(&mdp_clk_lock);
-		clk_set_rate(mdp_clk, mdp_pdata->mdp_core_clk_rate);
+		clk_set_rate(mdp_clk, mdp_clk_rate);
 		if (mdp_lut_clk != NULL)
-			clk_set_rate(mdp_lut_clk, mdp_pdata->mdp_core_clk_rate);
+			clk_set_rate(mdp_lut_clk, mdp_clk_rate);
 		mutex_unlock(&mdp_clk_lock);
 	}
+
 	MSM_FB_DEBUG("mdp_clk: mdp_clk=%d\n", (int)clk_get_rate(mdp_clk));
 #endif
 	return 0;
@@ -2115,9 +2121,10 @@ static int mdp_probe(struct platform_device *pdev)
 #if defined(CONFIG_FB_MSM_MIPI_DSI) && defined(CONFIG_FB_MSM_MDP40)
 	struct mipi_panel_info *mipi;
 #endif
+	static int contSplash_update_done;
 
 	if ((pdev->id == 0) && (pdev->num_resources > 0)) {
-
+		mdp_init_pdev = pdev;
 		mdp_pdata = pdev->dev.platform_data;
 
 		size =  resource_size(&pdev->resource[0]);
@@ -2136,7 +2143,8 @@ static int mdp_probe(struct platform_device *pdev)
 		}
 
 		mdp_rev = mdp_pdata->mdp_rev;
-		rc = mdp_irq_clk_setup();
+
+		rc = mdp_irq_clk_setup(pdev, mdp_pdata->cont_splash_enabled);
 
 		if (rc)
 			return rc;
@@ -2145,7 +2153,8 @@ static int mdp_probe(struct platform_device *pdev)
 
 		/* initializing mdp hw */
 #ifdef CONFIG_FB_MSM_MDP40
-		mdp4_hw_init();
+		if (!(mdp_pdata->cont_splash_enabled))
+			mdp4_hw_init();
 #else
 		mdp_hw_init();
 #endif
@@ -2179,6 +2188,18 @@ static int mdp_probe(struct platform_device *pdev)
 	mfd->pdev = msm_fb_dev;
 	mfd->mdp_rev = mdp_rev;
 
+	if (mdp_pdata) {
+		if (mdp_pdata->cont_splash_enabled) {
+			mfd->cont_splash_done = 0;
+			if (!contSplash_update_done) {
+				mdp_pipe_ctrl(MDP_CMD_BLOCK,
+					MDP_BLOCK_POWER_ON, FALSE);
+				contSplash_update_done = 1;
+			}
+		} else
+			mfd->cont_splash_done = 1;
+	}
+
 	mfd->ov0_wb_buf = MDP_ALLOC(sizeof(struct mdp_buf_type));
 	mfd->ov1_wb_buf = MDP_ALLOC(sizeof(struct mdp_buf_type));
 	memset((void *)mfd->ov0_wb_buf, 0, sizeof(struct mdp_buf_type));
@@ -2193,7 +2214,6 @@ static int mdp_probe(struct platform_device *pdev)
 		mfd->ov1_wb_buf->size = 0;
 		mfd->mem_hid = 0;
 	}
-
 	mfd->ov0_blt_state  = 0;
 	mfd->use_ov0_blt = 0 ;
 
@@ -2282,7 +2302,7 @@ static int mdp_probe(struct platform_device *pdev)
 
 		mdp4_display_intf_sel(if_no, intf);
 #endif
-		mdp_config_vsync(mfd);
+		mdp_config_vsync(mdp_init_pdev, mfd);
 		break;
 
 #ifdef CONFIG_FB_MSM_MIPI_DSI
@@ -2355,8 +2375,10 @@ static int mdp_probe(struct platform_device *pdev)
 			rc = -ENODEV;
 			goto mdp_probe_err;
 		}
+		INIT_WORK(&mfd->dma_update_worker,
+			mdp_lcd_update_workqueue_handler);
 #endif
-		mdp_config_vsync(mfd);
+		mdp_config_vsync(mdp_init_pdev, mfd);
 		break;
 #endif
 
@@ -2472,6 +2494,11 @@ static int mdp_probe(struct platform_device *pdev)
 			return -ENOMEM;
 		}
 	}
+
+	/* req bus bandwidth immediately */
+	if (!(mfd->cont_splash_done))
+		mdp_bus_scale_update_request(5);
+
 #endif
 
 	/* set driver data */
