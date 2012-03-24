@@ -32,6 +32,7 @@
 #include <linux/remote_spinlock.h>
 #include <linux/uaccess.h>
 #include <linux/kfifo.h>
+#include <linux/wakelock.h>
 #include <mach/msm_smd.h>
 #include <mach/msm_iomap.h>
 #include <mach/system.h>
@@ -63,6 +64,7 @@
 #define SMEM_VERSION 0x000B
 #define SMD_VERSION 0x00020000
 #define SMSM_SNAPSHOT_CNT 64
+#define SMSM_SNAPSHOT_SIZE ((SMSM_NUM_ENTRIES + 1) * 4)
 
 uint32_t SMSM_NUM_ENTRIES = 8;
 uint32_t SMSM_NUM_HOSTS = 3;
@@ -72,6 +74,7 @@ enum {
 	MSM_SMSM_DEBUG = 1U << 1,
 	MSM_SMD_INFO = 1U << 2,
 	MSM_SMSM_INFO = 1U << 3,
+        MSM_SMx_POWER_INFO = 1U << 4,
 };
 
 struct smsm_shared_info {
@@ -81,7 +84,10 @@ struct smsm_shared_info {
 };
 
 static struct smsm_shared_info smsm_info;
-struct kfifo smsm_snapshot_fifo;
+static struct kfifo smsm_snapshot_fifo;
+static struct wake_lock smsm_snapshot_wakelock;
+static int smsm_snapshot_count;
+static DEFINE_SPINLOCK(smsm_snapshot_count_lock);
 
 struct smsm_size_info_type {
 	uint32_t num_hosts;
@@ -136,11 +142,16 @@ module_param_named(debug_mask, msm_smd_debug_mask,
 		if (msm_smd_debug_mask & MSM_SMSM_INFO) \
 			printk(KERN_INFO x);		\
 	} while (0)
+#define SMx_POWER_INFO(x...) do {				\
+		if (msm_smd_debug_mask & MSM_SMx_POWER_INFO) \
+			printk(KERN_INFO x);		\
+	} while (0)
 #else
 #define SMD_DBG(x...) do { } while (0)
 #define SMSM_DBG(x...) do { } while (0)
 #define SMD_INFO(x...) do { } while (0)
 #define SMSM_INFO(x...) do { } while (0)
+#define SMx_POWER_INFO(x...) do { } while (0)
 #endif
 
 static unsigned last_heap_free = 0xffffffff;
@@ -242,8 +253,9 @@ static remote_spinlock_t remote_spinlock;
 static LIST_HEAD(smd_ch_list_loopback);
 static irqreturn_t smsm_irq_handler(int irq, void *data);
 static void smd_fake_irq_handler(unsigned long arg);
-static void smsm_cb_snapshot(void);
+static void smsm_cb_snapshot(uint32_t use_wakelock);
 
+static struct workqueue_struct *smsm_cb_wq;
 static void notify_smsm_cb_clients_worker(struct work_struct *work);
 static DECLARE_WORK(smsm_cb_work, notify_smsm_cb_clients_worker);
 static DEFINE_MUTEX(smsm_lock);
@@ -1515,9 +1527,6 @@ int smd_named_open_on_edge(const char *name, uint32_t edge,
 
 	ch = smd_get_channel(name, edge);
 	if (!ch) {
-		unsigned long flags;
-		struct smd_channel *ch;
-
 		/* check closing list for port */
 		spin_lock_irqsave(&smd_lock, flags);
 		list_for_each_entry(ch, &smd_ch_closing_list, ch_list) {
@@ -1726,42 +1735,77 @@ EXPORT_SYMBOL(smd_write_end);
 
 int smd_read(smd_channel_t *ch, void *data, int len)
 {
+	if (!ch) {
+		pr_err("%s: Invalid channel specified\n", __func__);
+		return -ENODEV;
+	}
+
 	return ch->read(ch, data, len, 0);
 }
 EXPORT_SYMBOL(smd_read);
 
 int smd_read_user_buffer(smd_channel_t *ch, void *data, int len)
 {
+	if (!ch) {
+		pr_err("%s: Invalid channel specified\n", __func__);
+		return -ENODEV;
+	}
+
 	return ch->read(ch, data, len, 1);
 }
 EXPORT_SYMBOL(smd_read_user_buffer);
 
 int smd_read_from_cb(smd_channel_t *ch, void *data, int len)
 {
+	if (!ch) {
+		pr_err("%s: Invalid channel specified\n", __func__);
+		return -ENODEV;
+	}
+
 	return ch->read_from_cb(ch, data, len, 0);
 }
 EXPORT_SYMBOL(smd_read_from_cb);
 
 int smd_write(smd_channel_t *ch, const void *data, int len)
 {
+	if (!ch) {
+		pr_err("%s: Invalid channel specified\n", __func__);
+		return -ENODEV;
+	}
+
 	return ch->pending_pkt_sz ? -EBUSY : ch->write(ch, data, len, 0);
 }
 EXPORT_SYMBOL(smd_write);
 
 int smd_write_user_buffer(smd_channel_t *ch, const void *data, int len)
 {
+	if (!ch) {
+		pr_err("%s: Invalid channel specified\n", __func__);
+		return -ENODEV;
+	}
+
 	return ch->pending_pkt_sz ? -EBUSY : ch->write(ch, data, len, 1);
 }
 EXPORT_SYMBOL(smd_write_user_buffer);
 
 int smd_read_avail(smd_channel_t *ch)
 {
+	if (!ch) {
+		pr_err("%s: Invalid channel specified\n", __func__);
+		return -ENODEV;
+	}
+
 	return ch->read_avail(ch);
 }
 EXPORT_SYMBOL(smd_read_avail);
 
 int smd_write_avail(smd_channel_t *ch)
 {
+	if (!ch) {
+		pr_err("%s: Invalid channel specified\n", __func__);
+		return -ENODEV;
+	}
+
 	return ch->write_avail(ch);
 }
 EXPORT_SYMBOL(smd_write_avail);
@@ -1792,12 +1836,22 @@ int smd_wait_until_writable(smd_channel_t *ch, int bytes)
 
 int smd_cur_packet_size(smd_channel_t *ch)
 {
+	if (!ch) {
+		pr_err("%s: Invalid channel specified\n", __func__);
+		return -ENODEV;
+	}
+
 	return ch->current_packet;
 }
 EXPORT_SYMBOL(smd_cur_packet_size);
 
 int smd_tiocmget(smd_channel_t *ch)
 {
+	if (!ch) {
+		pr_err("%s: Invalid channel specified\n", __func__);
+		return -ENODEV;
+	}
+
 	return  (ch->recv->fDSR ? TIOCM_DSR : 0) |
 		(ch->recv->fCTS ? TIOCM_CTS : 0) |
 		(ch->recv->fCD ? TIOCM_CD : 0) |
@@ -1811,6 +1865,11 @@ EXPORT_SYMBOL(smd_tiocmget);
 int
 smd_tiocmset_from_cb(smd_channel_t *ch, unsigned int set, unsigned int clear)
 {
+	if (!ch) {
+		pr_err("%s: Invalid channel specified\n", __func__);
+		return -ENODEV;
+	}
+
 	if (set & TIOCM_DTR)
 		ch->send->fDSR = 1;
 
@@ -1834,6 +1893,11 @@ EXPORT_SYMBOL(smd_tiocmset_from_cb);
 int smd_tiocmset(smd_channel_t *ch, unsigned int set, unsigned int clear)
 {
 	unsigned long flags;
+
+	if (!ch) {
+		pr_err("%s: Invalid channel specified\n", __func__);
+		return -ENODEV;
+	}
 
 	spin_lock_irqsave(&smd_lock, flags);
 	smd_tiocmset_from_cb(ch, set, clear);
@@ -1966,6 +2030,13 @@ static int smsm_cb_init(void)
 		return -ENOMEM;
 	}
 
+	smsm_cb_wq = create_singlethread_workqueue("smsm_cb_wq");
+	if (!smsm_cb_wq) {
+		pr_err("%s: smsm_cb_wq creation failed\n", __func__);
+		kfree(smsm_states);
+		return -EFAULT;
+	}
+
 	mutex_lock(&smsm_lock);
 	for (n = 0; n < SMSM_NUM_ENTRIES; n++) {
 		state_info = &smsm_states[n];
@@ -2004,6 +2075,8 @@ static int smsm_init(void)
 		pr_err("%s: SMSM state fifo alloc failed %d\n", __func__, i);
 		return i;
 	}
+	wake_lock_init(&smsm_snapshot_wakelock, WAKE_LOCK_SUSPEND,
+			"smsm_snapshot");
 
 	if (!smsm_info.state) {
 		smsm_info.state = smem_alloc2(ID_SHARED_STATE,
@@ -2074,18 +2147,43 @@ void smsm_reset_modem_cont(void)
 }
 EXPORT_SYMBOL(smsm_reset_modem_cont);
 
-static void smsm_cb_snapshot(void)
+static void smsm_cb_snapshot(uint32_t use_wakelock)
 {
 	int n;
 	uint32_t new_state;
+	unsigned long flags;
 	int ret;
 
 	ret = kfifo_avail(&smsm_snapshot_fifo);
-	if (ret < (SMSM_NUM_ENTRIES * 4)) {
+	if (ret < SMSM_SNAPSHOT_SIZE) {
 		pr_err("%s: SMSM snapshot full %d\n", __func__, ret);
 		return;
 	}
 
+	/*
+	 * To avoid a race condition with notify_smsm_cb_clients_worker, the
+	 * following sequence must be followed:
+	 *   1) increment snapshot count
+	 *   2) insert data into FIFO
+	 *
+	 *   Potentially in parallel, the worker:
+	 *   a) verifies >= 1 snapshots are in FIFO
+	 *   b) processes snapshot
+	 *   c) decrements reference count
+	 *
+	 *   This order ensures that 1 will always occur before abc.
+	 */
+	if (use_wakelock) {
+		spin_lock_irqsave(&smsm_snapshot_count_lock, flags);
+		if (smsm_snapshot_count == 0) {
+			SMx_POWER_INFO("SMSM snapshot wake lock\n");
+			wake_lock(&smsm_snapshot_wakelock);
+		}
+		++smsm_snapshot_count;
+		spin_unlock_irqrestore(&smsm_snapshot_count_lock, flags);
+	}
+
+	/* queue state entries */
 	for (n = 0; n < SMSM_NUM_ENTRIES; n++) {
 		new_state = __raw_readl(SMSM_STATE_ADDR(n));
 
@@ -2093,10 +2191,35 @@ static void smsm_cb_snapshot(void)
 				&new_state, sizeof(new_state));
 		if (ret != sizeof(new_state)) {
 			pr_err("%s: SMSM snapshot failure %d\n", __func__, ret);
-			return;
+			goto restore_snapshot_count;
 		}
 	}
-	schedule_work(&smsm_cb_work);
+
+	/* queue wakelock usage flag */
+	ret = kfifo_in(&smsm_snapshot_fifo,
+			&use_wakelock, sizeof(use_wakelock));
+	if (ret != sizeof(use_wakelock)) {
+		pr_err("%s: SMSM snapshot failure %d\n", __func__, ret);
+		goto restore_snapshot_count;
+	}
+
+	queue_work(smsm_cb_wq, &smsm_cb_work);
+	return;
+
+restore_snapshot_count:
+	if (use_wakelock) {
+		spin_lock_irqsave(&smsm_snapshot_count_lock, flags);
+		if (smsm_snapshot_count) {
+			--smsm_snapshot_count;
+			if (smsm_snapshot_count == 0) {
+				SMx_POWER_INFO("SMSM snapshot wake unlock\n");
+				wake_unlock(&smsm_snapshot_wakelock);
+			}
+		} else {
+			pr_err("%s: invalid snapshot count\n", __func__);
+		}
+		spin_unlock_irqrestore(&smsm_snapshot_count_lock, flags);
+	}
 }
 
 static irqreturn_t smsm_irq_handler(int irq, void *data)
@@ -2115,7 +2238,7 @@ static irqreturn_t smsm_irq_handler(int irq, void *data)
 		}
 
 		spin_lock_irqsave(&smem_lock, flags);
-		smsm_cb_snapshot();
+		smsm_cb_snapshot(1);
 		spin_unlock_irqrestore(&smem_lock, flags);
 		return IRQ_HANDLED;
 	}
@@ -2174,7 +2297,7 @@ static irqreturn_t smsm_irq_handler(int irq, void *data)
 			notify_other_smsm(SMSM_APPS_STATE, (old_apps ^ apps));
 		}
 
-		smsm_cb_snapshot();
+		smsm_cb_snapshot(1);
 	}
 	spin_unlock_irqrestore(&smem_lock, flags);
 	return IRQ_HANDLED;
@@ -2289,13 +2412,14 @@ void notify_smsm_cb_clients_worker(struct work_struct *work)
 	int n;
 	uint32_t new_state;
 	uint32_t state_changes;
+	uint32_t use_wakelock;
 	int ret;
-	int snapshot_size = SMSM_NUM_ENTRIES * sizeof(uint32_t);
+	unsigned long flags;
 
 	if (!smd_initialized)
 		return;
 
-	while (kfifo_len(&smsm_snapshot_fifo) >= snapshot_size) {
+	while (kfifo_len(&smsm_snapshot_fifo) >= SMSM_SNAPSHOT_SIZE) {
 		mutex_lock(&smsm_lock);
 		for (n = 0; n < SMSM_NUM_ENTRIES; n++) {
 			state_info = &smsm_states[n];
@@ -2322,7 +2446,34 @@ void notify_smsm_cb_clients_worker(struct work_struct *work)
 				state_info->last_value = new_state;
 			}
 		}
+
+		/* read wakelock flag */
+		ret = kfifo_out(&smsm_snapshot_fifo, &use_wakelock,
+				sizeof(use_wakelock));
+		if (ret != sizeof(use_wakelock)) {
+			pr_err("%s: snapshot underflow %d\n",
+				__func__, ret);
+			mutex_unlock(&smsm_lock);
+			return;
+		}
 		mutex_unlock(&smsm_lock);
+
+		if (use_wakelock) {
+			spin_lock_irqsave(&smsm_snapshot_count_lock, flags);
+			if (smsm_snapshot_count) {
+				--smsm_snapshot_count;
+				if (smsm_snapshot_count == 0) {
+					SMx_POWER_INFO("SMSM snapshot"
+						   " wake unlock\n");
+					wake_unlock(&smsm_snapshot_wakelock);
+				}
+			} else {
+				pr_err("%s: invalid snapshot count\n",
+						__func__);
+			}
+			spin_unlock_irqrestore(&smsm_snapshot_count_lock,
+					flags);
+		}
 	}
 }
 
