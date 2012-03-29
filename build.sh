@@ -1,4 +1,3 @@
-
 export KBUILD_BUILD_USER="Mediapad EX"
 export ARCH=arm
 export SUBARCH=arm
@@ -20,3 +19,4 @@ find -name '*.ko' -exec cp -av {} lib/modules/ \;
 # Make boot.img
 
 ./mkbootimg --cmdline "$CMDLINE" --base $BASE --kernel zImage --ramdisk $ramdisk_dir -o boot_new.img
+

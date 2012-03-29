@@ -53,7 +53,7 @@ static const struct pm_id_name pm3_types[] = {
 	{CP_IM_LOAD,			"IN__LOAD"},
 	{CP_IM_LOAD_IMMEDIATE,		"IM_LOADI"},
 	{CP_IM_STORE,			"IM_STORE"},
-	{CP_INDIRECT_BUFFER,		"IND_BUF_"},
+	{CP_INDIRECT_BUFFER_PFE,	"IND_BUF_"},
 	{CP_INDIRECT_BUFFER_PFD,	"IND_BUFP"},
 	{CP_INTERRUPT,			"PM4_INTR"},
 	{CP_INVALIDATE_STATE,		"INV_STAT"},
@@ -156,7 +156,7 @@ static void adreno_dump_regs(struct kgsl_device *device,
 	}
 }
 
-static void dump_ib(struct kgsl_device *device, char* buffId, uint32_t pt_base,
+void dump_ib(struct kgsl_device *device, char *buffId, uint32_t pt_base,
 	uint32_t base_offset, uint32_t ib_base, uint32_t ib_size, bool dump)
 {
 	uint8_t *base_addr = adreno_convertaddr(device, pt_base,
@@ -172,15 +172,7 @@ static void dump_ib(struct kgsl_device *device, char* buffId, uint32_t pt_base,
 			base_addr ? "" : " [Invalid]");
 }
 
-#define IB_LIST_SIZE	64
-struct ib_list {
-	int count;
-	uint32_t bases[IB_LIST_SIZE];
-	uint32_t sizes[IB_LIST_SIZE];
-	uint32_t offsets[IB_LIST_SIZE];
-};
-
-static void dump_ib1(struct kgsl_device *device, uint32_t pt_base,
+void dump_ib1(struct kgsl_device *device, uint32_t pt_base,
 			uint32_t base_offset,
 			uint32_t ib1_base, uint32_t ib1_size,
 			struct ib_list *ib_list, bool dump)
@@ -200,7 +192,7 @@ static void dump_ib1(struct kgsl_device *device, uint32_t pt_base,
 
 	for (i = 0; i+3 < ib1_size; ) {
 		value = ib1_addr[i++];
-		if (value == cp_type3_packet(CP_INDIRECT_BUFFER_PFD, 2)) {
+		if (adreno_cmd_is_ib(value)) {
 			uint32_t ib2_base = ib1_addr[i++];
 			uint32_t ib2_size = ib1_addr[i++];
 
@@ -547,7 +539,8 @@ static int adreno_dump(struct kgsl_device *device)
 		" %08X\n", r1, r2, pt_base);
 	cur_pt_base = pt_base;
 
-	KGSL_LOG_DUMP(device, "PAGETABLE SIZE: %08X ", KGSL_PAGETABLE_SIZE);
+	KGSL_LOG_DUMP(device, "PAGETABLE SIZE: %08X ",
+		kgsl_mmu_get_ptsize());
 
 	kgsl_regread(device, MH_MMU_TRAN_ERROR, &r1);
 	KGSL_LOG_DUMP(device, "        TRAN_ERROR = %08X\n", r1);
@@ -611,7 +604,7 @@ static int adreno_dump(struct kgsl_device *device)
 	i = 0;
 	for (read_idx = 0; read_idx < num_item; ) {
 		uint32_t this_cmd = rb_copy[read_idx++];
-		if (this_cmd == cp_type3_packet(CP_INDIRECT_BUFFER_PFD, 2)) {
+		if (adreno_cmd_is_ib(this_cmd)) {
 			uint32_t ib_addr = rb_copy[read_idx++];
 			uint32_t ib_size = rb_copy[read_idx++];
 			dump_ib1(device, cur_pt_base, (read_idx-3)<<2, ib_addr,
@@ -654,8 +647,7 @@ static int adreno_dump(struct kgsl_device *device)
 		for (read_idx = NUM_DWORDS_OF_RINGBUFFER_HISTORY;
 			read_idx >= 0; --read_idx) {
 			uint32_t this_cmd = rb_copy[read_idx];
-			if (this_cmd == cp_type3_packet(
-				CP_INDIRECT_BUFFER_PFD, 2)) {
+			if (adreno_cmd_is_ib(this_cmd)) {
 				uint32_t ib_addr = rb_copy[read_idx+1];
 				uint32_t ib_size = rb_copy[read_idx+2];
 				if (ib_size && cp_ib1_base == ib_addr) {
@@ -723,7 +715,7 @@ int adreno_postmortem_dump(struct kgsl_device *device, int manual)
 		}
 
 		if (device->state == KGSL_STATE_ACTIVE)
-			kgsl_idle(device,  KGSL_TIMEOUT_DEFAULT);
+			kgsl_idle(device);
 
 	}
 	KGSL_LOG_DUMP(device, "POWER: FLAGS = %08lX | ACTIVE POWERLEVEL = %08X",
