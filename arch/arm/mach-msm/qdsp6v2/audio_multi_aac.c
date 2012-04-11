@@ -2,7 +2,7 @@
  *
  * Copyright (C) 2008 Google, Inc.
  * Copyright (C) 2008 HTC Corporation
- * Copyright (c) 2011, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2011-2012, Code Aurora Forum. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -16,6 +16,7 @@
  */
 
 #include <linux/msm_audio_aac.h>
+#include <mach/socinfo.h>
 #include "audio_utils_aio.h"
 
 #define AUDIO_AAC_DUAL_MONO_INVALID -1
@@ -69,7 +70,7 @@ static long audio_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			/* Configure PCM output block */
 			rc = q6asm_enc_cfg_blk_pcm(audio->ac,
 				0, /*native sampling rate*/
-				(audio->pcm_cfg.channel_count <= 2) ? 0 : 2);
+				0 /*native channel count*/);
 			if (rc < 0) {
 				pr_err("pcm output block config failed\n");
 				break;
@@ -121,6 +122,14 @@ static long audio_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		if (rc < 0) {
 			pr_err("cmd media format block failed\n");
 			break;
+		}
+		if (!cpu_is_msm8x60()) {
+			rc = q6asm_set_encdec_chan_map(audio->ac, 2);
+			if (rc < 0) {
+				pr_err("%s: cmd set encdec_chan_map failed\n",
+					__func__);
+				break;
+			}
 		}
 		rc = audio_aio_enable(audio);
 		audio->eos_rsp = 0;
