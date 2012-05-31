@@ -270,14 +270,15 @@ void mdp4_writeback_kickoff_video(struct msm_fb_data_type *mfd,
 	if (node) {
 		list_del(&(node->active_entry));
 		node->state = IN_BUSY_QUEUE;
+		mfd->writeback_active_cnt++;
 	}
 	mutex_unlock(&mfd->writeback_mutex);
 
-	writeback_pipe->blt_addr = (ulong) (node ? node->addr : NULL);
+	writeback_pipe->ov_blt_addr = (ulong) (node ? node->addr : NULL);
 
-	if (!writeback_pipe->blt_addr) {
+	if (!writeback_pipe->ov_blt_addr) {
 		pr_err("%s: no writeback buffer 0x%x, %p\n", __func__,
-				(unsigned int)writeback_pipe->blt_addr, node);
+				(unsigned int)writeback_pipe->ov_blt_addr, node);
 		mutex_unlock(&mfd->unregister_mutex);
 		return;
 	}
@@ -287,11 +288,14 @@ void mdp4_writeback_kickoff_video(struct msm_fb_data_type *mfd,
 
 	pr_debug("%s: pid=%d\n", __func__, current->pid);
 
+	mdp4_mixer_stage_commit(pipe->mixer_num);
+
 	mdp4_writeback_overlay_kickoff(mfd, pipe);
 
 	mutex_lock(&mfd->writeback_mutex);
 	list_add_tail(&node->active_entry, &mfd->writeback_busy_queue);
 	mutex_unlock(&mfd->writeback_mutex);
+	mfd->writeback_active_cnt--;
 	mutex_unlock(&mfd->unregister_mutex);
 	wake_up(&mfd->wait_q);
 }
@@ -299,6 +303,7 @@ void mdp4_writeback_kickoff_video(struct msm_fb_data_type *mfd,
 void mdp4_writeback_kickoff_ui(struct msm_fb_data_type *mfd,
 		struct mdp4_overlay_pipe *pipe)
 {
+	mdp4_mixer_stage_commit(pipe->mixer_num);
 
 	pr_debug("%s: pid=%d\n", __func__, current->pid);
 	mdp4_writeback_overlay_kickoff(mfd, pipe);
@@ -318,16 +323,17 @@ void mdp4_writeback_overlay(struct msm_fb_data_type *mfd)
 	if (node) {
 		list_del(&(node->active_entry));
 		node->state = IN_BUSY_QUEUE;
+		mfd->writeback_active_cnt++;
 	}
 	mutex_unlock(&mfd->writeback_mutex);
 
-	writeback_pipe->blt_addr = (ulong) (node ? node->addr : NULL);
+	writeback_pipe->ov_blt_addr = (ulong) (node ? node->addr : NULL);
 
 	mutex_lock(&mfd->dma->ov_mutex);
 	pr_debug("%s in writeback\n", __func__);
-	if (writeback_pipe && !writeback_pipe->blt_addr) {
+	if (writeback_pipe && !writeback_pipe->ov_blt_addr) {
 		pr_err("%s: no writeback buffer 0x%x\n", __func__,
-				(unsigned int)writeback_pipe->blt_addr);
+				(unsigned int)writeback_pipe->ov_blt_addr);
 		ret = mdp4_overlay_writeback_update(mfd);
 		if (ret)
 			pr_err("%s: update failed writeback pipe NULL\n",
@@ -348,7 +354,7 @@ void mdp4_writeback_overlay(struct msm_fb_data_type *mfd)
 		}
 
 		pr_debug("%s: in writeback pan display 0x%x\n", __func__,
-				(unsigned int)writeback_pipe->blt_addr);
+				(unsigned int)writeback_pipe->ov_blt_addr);
 		mdp4_writeback_kickoff_ui(mfd, writeback_pipe);
 		mdp4_iommu_unmap(writeback_pipe);
 
@@ -362,6 +368,7 @@ void mdp4_writeback_overlay(struct msm_fb_data_type *mfd)
 
 	mutex_lock(&mfd->writeback_mutex);
 	list_add_tail(&node->active_entry, &mfd->writeback_busy_queue);
+	mfd->writeback_active_cnt--;
 	mutex_unlock(&mfd->writeback_mutex);
 	wake_up(&mfd->wait_q);
 fail_no_blt_addr:
@@ -534,13 +541,26 @@ int mdp4_writeback_dequeue_buffer(struct fb_info *info, struct msmfb_data *data)
 	return rc;
 }
 
+static bool is_writeback_inactive(struct msm_fb_data_type *mfd)
+{
+	bool active;
+	mutex_lock(&mfd->writeback_mutex);
+	active = !mfd->writeback_active_cnt;
+	mutex_unlock(&mfd->writeback_mutex);
+	return active;
+}
 int mdp4_writeback_stop(struct fb_info *info)
 {
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
 	mutex_lock(&mfd->writeback_mutex);
 	mfd->writeback_state = WB_STOPING;
 	mutex_unlock(&mfd->writeback_mutex);
+	/* Wait for all pending writebacks to finish */
+	wait_event_interruptible(mfd->wait_q, is_writeback_inactive(mfd));
+
+	/* Wake up dequeue thread in case of no UI update*/
 	wake_up(&mfd->wait_q);
+
 	return 0;
 }
 int mdp4_writeback_init(struct fb_info *info)
@@ -560,8 +580,19 @@ int mdp4_writeback_terminate(struct fb_info *info)
 	struct list_head *ptr, *next;
 	struct msmfb_writeback_data_list *temp;
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
+	int rc = 0;
+
 	mutex_lock(&mfd->unregister_mutex);
 	mutex_lock(&mfd->writeback_mutex);
+
+	if (mfd->writeback_state != WB_STOPING &&
+		mfd->writeback_state != WB_STOP) {
+		pr_err("%s called without stopping\n", __func__);
+		rc = -EPERM;
+		goto terminate_err;
+
+	}
+
 	if (!list_empty(&mfd->writeback_register_queue)) {
 		list_for_each_safe(ptr, next,
 				&mfd->writeback_register_queue) {
@@ -575,7 +606,10 @@ int mdp4_writeback_terminate(struct fb_info *info)
 	INIT_LIST_HEAD(&mfd->writeback_register_queue);
 	INIT_LIST_HEAD(&mfd->writeback_busy_queue);
 	INIT_LIST_HEAD(&mfd->writeback_free_queue);
+
+
+terminate_err:
 	mutex_unlock(&mfd->writeback_mutex);
 	mutex_unlock(&mfd->unregister_mutex);
-	return 0;
+	return rc;
 }

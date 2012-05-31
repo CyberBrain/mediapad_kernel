@@ -31,8 +31,11 @@
 #define MSMFB_OVERLAY_SET       _IOWR(MSMFB_IOCTL_MAGIC, 135, \
 						struct mdp_overlay)
 #define MSMFB_OVERLAY_UNSET     _IOW(MSMFB_IOCTL_MAGIC, 136, unsigned int)
+
 #define MSMFB_OVERLAY_PLAY      _IOW(MSMFB_IOCTL_MAGIC, 137, \
 						struct msmfb_overlay_data)
+#define MSMFB_OVERLAY_QUEUE	MSMFB_OVERLAY_PLAY
+
 #define MSMFB_GET_PAGE_PROTECTION _IOR(MSMFB_IOCTL_MAGIC, 138, \
 					struct mdp_page_protection)
 #define MSMFB_SET_PAGE_PROTECTION _IOW(MSMFB_IOCTL_MAGIC, 139, \
@@ -64,6 +67,9 @@
 						struct msmfb_data)
 #define MSMFB_WRITEBACK_TERMINATE _IO(MSMFB_IOCTL_MAGIC, 155)
 #define MSMFB_MDP_PP _IOWR(MSMFB_IOCTL_MAGIC, 156, struct msmfb_mdp_pp)
+
+#define MSMFB_OVERLAY_VSYNC_CTRL  _IOW(MSMFB_IOCTL_MAGIC, 160, unsigned int)
+
 
 #define FB_TYPE_3D_PANEL 0x10101010
 #define MDP_IMGTYPE2_START 0x10000
@@ -329,6 +335,7 @@ enum {
 	MDP_BLOCK_DMA_P,
 	MDP_BLOCK_DMA_S,
 	MDP_BLOCK_DMA_E,
+	MDP_BLOCK_OVERLAY_2,
 	MDP_BLOCK_MAX,
 };
 
@@ -431,7 +438,6 @@ struct mdp_hist_lut_data {
 	uint32_t *data;
 };
 
-
 struct mdp_lut_cfg_data {
 	uint32_t lut_type;
 	union {
@@ -441,10 +447,16 @@ struct mdp_lut_cfg_data {
 	} data;
 };
 
+struct mdp_bl_scale_data {
+	uint32_t min_lvl;
+	uint32_t scale;
+};
+
 enum {
 	mdp_op_pcc_cfg,
 	mdp_op_csc_cfg,
 	mdp_op_lut_cfg,
+	mdp_bl_scale_cfg,
 	mdp_op_max,
 };
 
@@ -454,6 +466,7 @@ struct msmfb_mdp_pp {
 		struct mdp_pcc_cfg_data pcc_cfg_data;
 		struct mdp_csc_cfg_data csc_cfg_data;
 		struct mdp_lut_cfg_data lut_cfg_data;
+		struct mdp_bl_scale_data bl_scale_data;
 	} data;
 };
 

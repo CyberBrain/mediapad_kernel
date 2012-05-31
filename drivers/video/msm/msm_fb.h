@@ -183,6 +183,7 @@ struct msm_fb_data_type {
 	u32 use_ov0_blt, ov0_blt_state;
 	u32 use_ov1_blt, ov1_blt_state;
 	u32 writeback_state;
+	bool writeback_active_cnt;
 	int cont_splash_done;
 };
 
@@ -212,5 +213,10 @@ void fill_black_screen(void);
 void unfill_black_screen(void);
 int msm_fb_check_frame_rate(struct msm_fb_data_type *mfd,
 				struct fb_info *info);
+ 
+#ifdef CONFIG_FB_MSM_LOGO
+#define INIT_IMAGE_FILE "/initlogo.rle"
+int load_565rle_image(char *filename, bool bf_supported);
+#endif
 
 #endif /* MSM_FB_H */
