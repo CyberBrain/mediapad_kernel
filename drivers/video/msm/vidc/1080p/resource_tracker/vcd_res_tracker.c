@@ -21,9 +21,9 @@
 #include <linux/interrupt.h>
 #include <linux/memory_alloc.h>
 #include <asm/sizes.h>
+#include <media/msm/vidc_init.h>
 #include "vidc.h"
 #include "vcd_res_tracker.h"
-#include "vidc_init.h"
 
 static unsigned int vidc_clk_table[3] = {
 	48000000, 133330000, 200000000
@@ -618,8 +618,9 @@ u32 res_trk_get_firmware_addr(struct ddl_buf_addr *firm_addr)
 			   __func__);
 		return -EINVAL;
 	}
-	memcpy(firm_addr, &resource_context.firmware_addr,
-		sizeof(struct ddl_buf_addr));
+	if (!res_trk_check_for_sec_session())
+		memcpy(firm_addr, &resource_context.firmware_addr,
+				sizeof(struct ddl_buf_addr));
 	return 0;
 }
 
@@ -740,16 +741,26 @@ int res_trk_check_for_sec_session()
 	mutex_unlock(&resource_context.secure_lock);
 	return rc;
 }
+
+void res_trk_secure_unset(void)
+{
+	mutex_lock(&resource_context.secure_lock);
+	resource_context.secure_session = 0;
+	mutex_unlock(&resource_context.secure_lock);
+}
+
+void res_trk_secure_set(void)
+{
+	mutex_lock(&resource_context.secure_lock);
+	resource_context.secure_session = 1;
+	mutex_unlock(&resource_context.secure_lock);
+}
+
 int res_trk_open_secure_session()
 {
 	int rc;
 	mutex_lock(&resource_context.secure_lock);
-	if (resource_context.secure_session) {
-		pr_err("Secure session already open");
-		rc = -EBUSY;
-		goto error_open;
-	}
-	resource_context.secure_session = 1;
+
 	rc = res_trk_enable_iommu_clocks();
 	if (rc) {
 		pr_err("IOMMU clock enabled failed while open");
