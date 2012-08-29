@@ -185,6 +185,7 @@ struct vcd_clnt_ctxt {
 	u32 live;
 	u32 decoding;
 	u32 bframe;
+	u32 num_slices;
 
 	struct vcd_property_frame_rate frm_rate;
 	u32 frm_p_units;
@@ -211,6 +212,7 @@ struct vcd_clnt_ctxt {
 	struct vcd_clnt_ctxt *next;
 	u32 meta_mode;
 	int secure;
+	int perf_set_by_client;
 };
 
 #define VCD_BUFFERPOOL_INUSE_DECREMENT(val) \
