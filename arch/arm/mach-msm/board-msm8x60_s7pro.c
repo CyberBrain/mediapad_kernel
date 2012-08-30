@@ -3500,16 +3500,21 @@ unsigned char hdmi_is_primary;
 #define USER_SMI_SIZE         (MSM_SMI_SIZE - KERNEL_SMI_SIZE)
 #define MSM_PMEM_SMIPOOL_SIZE USER_SMI_SIZE
 
-#define MSM_ION_SF_SIZE		0x1800000 /* 24MB */
+#define MSM_ION_SF_SIZE		0x4000000 /* 64MB */
 #define MSM_ION_CAMERA_SIZE     MSM_PMEM_ADSP_SIZE
 #define MSM_ION_MM_FW_SIZE	0x200000 /* (2MB) */
 #define MSM_ION_MM_SIZE		0x3600000 /* (54MB) */
 #define MSM_ION_MFC_SIZE	SZ_8K
+#ifdef CONFIG_FB_MSM_OVERLAY1_WRITEBACK
+#define MSM_ION_WB_SIZE		0xC00000 /* 12MB */
+#else
 #define MSM_ION_WB_SIZE		0x600000 /* 6MB */
-#define MSM_ION_AUDIO_SIZE     MSM_PMEM_AUDIO_SIZE
+#endif
+#define MSM_ION_QSECOM_SIZE	0x600000 /* (6MB) */
+#define MSM_ION_AUDIO_SIZE	MSM_PMEM_AUDIO_SIZE
 
 #ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
-#define MSM_ION_HEAP_NUM	8
+#define MSM_ION_HEAP_NUM	9
 #define MSM_HDMI_PRIM_ION_SF_SIZE MSM_HDMI_PRIM_PMEM_SF_SIZE
 static unsigned msm_ion_sf_size = MSM_ION_SF_SIZE;
 #else
@@ -6854,6 +6859,18 @@ static struct ion_co_heap_pdata co_ion_pdata = {
 	.align = PAGE_SIZE,
 };
 #endif
+
+/**
+ * These heaps are listed in the order they will be allocated. Due to
+ * video hardware restrictions and content protection the FW heap has to
+ * be allocated adjacent (below) the MM heap and the MFC heap has to be
+ * allocated after the MM heap to ensure MFC heap is not more than 256MB
+ * away from the base address of the FW heap.
+ * However, the order of FW heap and MM heap doesn't matter since these
+ * two heaps are taken care of by separate code to ensure they are adjacent
+ * to each other.
+ * Don't swap the order unless you know what you are doing!
+ */
 static struct ion_platform_data ion_pdata = {
 	.nr = MSM_ION_HEAP_NUM,
 	.heaps = {
@@ -6893,7 +6910,7 @@ static struct ion_platform_data ion_pdata = {
 			.name	= ION_SF_HEAP_NAME,
 			.size	= MSM_ION_SF_SIZE,
 			.memory_type = ION_EBI_TYPE,
-			.extra_data = (void *) &co_ion_pdata,
+			.extra_data = (void *)&co_ion_pdata,
 		},
 		{
 			.id	= ION_CAMERA_HEAP_ID,
@@ -6910,6 +6927,14 @@ static struct ion_platform_data ion_pdata = {
 			.size	= MSM_ION_WB_SIZE,
 			.memory_type = ION_EBI_TYPE,
 			.extra_data = (void *) &cp_wb_ion_pdata,
+		},
+		{
+			.id	= ION_QSECOM_HEAP_ID,
+			.type	= ION_HEAP_TYPE_CARVEOUT,
+			.name	= ION_QSECOM_HEAP_NAME,
+			.size	= MSM_ION_QSECOM_SIZE,
+			.memory_type = ION_EBI_TYPE,
+			.extra_data = (void *) &co_ion_pdata,
 		},
 		{
 			.id	= ION_AUDIO_HEAP_ID,
@@ -6960,46 +6985,45 @@ static struct memtype_reserve msm8x60_reserve_table[] __initdata = {
 
 static void reserve_ion_memory(void)
 {
-
-/* Verify size of heap is a multiple of 64K */
-       int i;
-       for (i = 0; i < ion_pdata.nr; i++) {
-               struct ion_platform_heap *heap = &(ion_pdata.heaps[i]);
-
-               if (heap->extra_data && heap->type == ION_HEAP_TYPE_CP) {
-                       int map_all = ((struct ion_cp_heap_pdata *)
-                               heap->extra_data)->iommu_map_all;
-
-                       if (map_all && (heap->size & (SZ_64K-1))) {
-                               heap->size = ALIGN(heap->size, SZ_64K);
-                               pr_err("Heap %s size is not a multiple of 64K. Adjusting size to %x\n",
-                                       heap->name, heap->size);
-
-                       }
-               }
-       }
-
 #if defined(CONFIG_ION_MSM) && defined(CONFIG_MSM_MULTIMEDIA_USE_ION)
-      unsigned int i;
-       if (hdmi_is_primary) {
-               msm_ion_sf_size = MSM_HDMI_PRIM_ION_SF_SIZE;
-               for (i = 0; i < ion_pdata.nr; i++) {
-                       if (ion_pdata.heaps[i].id == ION_SF_HEAP_ID) {
-                               ion_pdata.heaps[i].size = msm_ion_sf_size;
-                               pr_debug("msm_ion_sf_size 0x%x\n",
-                                       msm_ion_sf_size);
-                               break;
-                       }
-               }
-       }
+	unsigned int i;
 
-        msm8x60_reserve_table[MEMTYPE_EBI1].size += msm_ion_sf_size;;
+	if (hdmi_is_primary) {
+		msm_ion_sf_size = MSM_HDMI_PRIM_ION_SF_SIZE;
+		for (i = 0; i < ion_pdata.nr; i++) {
+			if (ion_pdata.heaps[i].id == ION_SF_HEAP_ID) {
+				ion_pdata.heaps[i].size = msm_ion_sf_size;
+				pr_debug("msm_ion_sf_size 0x%x\n",
+					msm_ion_sf_size);
+				break;
+			}
+		}
+	}
+
+	/* Verify size of heap is a multiple of 64K */
+	for (i = 0; i < ion_pdata.nr; i++) {
+		struct ion_platform_heap *heap = &(ion_pdata.heaps[i]);
+
+		if (heap->extra_data && heap->type == ION_HEAP_TYPE_CP) {
+			int map_all = ((struct ion_cp_heap_pdata *)
+				heap->extra_data)->iommu_map_all;
+
+			if (map_all && (heap->size & (SZ_64K-1))) {
+				heap->size = ALIGN(heap->size, SZ_64K);
+				pr_err("Heap %s size is not a multiple of 64K. Adjusting size to %x\n",
+					heap->name, heap->size);
+
+			}
+		}
+	}
+
+	msm8x60_reserve_table[MEMTYPE_EBI1].size += msm_ion_sf_size;
 	msm8x60_reserve_table[MEMTYPE_SMI].size += MSM_ION_MM_FW_SIZE;
 	msm8x60_reserve_table[MEMTYPE_SMI].size += MSM_ION_MM_SIZE;
 	msm8x60_reserve_table[MEMTYPE_SMI].size += MSM_ION_MFC_SIZE;
 	msm8x60_reserve_table[MEMTYPE_EBI1].size += MSM_ION_CAMERA_SIZE;
 	msm8x60_reserve_table[MEMTYPE_EBI1].size += MSM_ION_WB_SIZE;
-        msm8x60_reserve_table[MEMTYPE_EBI1].size += MSM_ION_AUDIO_SIZE;
+	msm8x60_reserve_table[MEMTYPE_EBI1].size += MSM_ION_AUDIO_SIZE;
 #endif
 }
 
