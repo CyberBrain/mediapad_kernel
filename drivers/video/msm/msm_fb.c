@@ -108,9 +108,6 @@ static int msm_fb_suspend_sub(struct msm_fb_data_type *mfd);
 static int msm_fb_ioctl(struct fb_info *info, unsigned int cmd,
 			unsigned long arg);
 static int msm_fb_mmap(struct fb_info *info, struct vm_area_struct * vma);
-static int mdp_bl_scale_config(struct msm_fb_data_type *mfd,
-						struct mdp_bl_scale_data *data);
-static void msm_fb_scale_bl(__u32 *bl_lvl);
 
 #ifdef MSM_FB_ENABLE_DBGFS
 
@@ -120,7 +117,6 @@ static void msm_fb_scale_bl(__u32 *bl_lvl);
 int msm_fb_debugfs_file_index;
 struct dentry *msm_fb_debugfs_root;
 struct dentry *msm_fb_debugfs_file[MSM_FB_MAX_DBGFS];
-static int bl_scale, bl_min_lvl;
 
 DEFINE_MUTEX(msm_fb_notify_update_sem);
 void msmfb_no_update_notify_timer_cb(unsigned long data)
@@ -345,8 +341,6 @@ static int msm_fb_probe(struct platform_device *pdev)
 	vsync_cntrl.dev = mfd->fbi->dev;
 	mfd->panel_info.frame_count = 0;
 	mfd->bl_level = 0;
-	bl_scale = 1024;
-	bl_min_lvl = 255;
 #ifdef CONFIG_FB_MSM_OVERLAY
 	mfd->overlay_play_enable = 1;
 #endif
@@ -744,41 +738,11 @@ static void msmfb_early_resume(struct early_suspend *h)
 
 static int unset_bl_level, bl_updated;
 static int bl_level_old;
-static int mdp_bl_scale_config(struct msm_fb_data_type *mfd,
-						struct mdp_bl_scale_data *data)
-{
-	int ret = 0;
-	int curr_bl = mfd->bl_level;
-	bl_scale = data->scale;
-	bl_min_lvl = data->min_lvl;
-	pr_debug("%s: update scale = %d, min_lvl = %d\n", __func__, bl_scale,
-								bl_min_lvl);
-
-	/* update current backlight to use new scaling*/
-	msm_fb_set_backlight(mfd, curr_bl);
-
-	return ret;
-}
-
-static void msm_fb_scale_bl(__u32 *bl_lvl)
-{
-	__u32 temp = *bl_lvl;
-	if (temp >= bl_min_lvl) {
-		/* bl_scale is the numerator of scaling fraction (x/1024)*/
-		temp = ((*bl_lvl) * bl_scale) / 1024;
-
-		/*if less than minimum level, use min level*/
-		if (temp < bl_min_lvl)
-			temp = bl_min_lvl;
-	}
-
-	(*bl_lvl) = temp;
-}
 
 void msm_fb_set_backlight(struct msm_fb_data_type *mfd, __u32 bkl_lvl)
 {
 	struct msm_fb_panel_data *pdata;
-	__u32 temp = bkl_lvl;
+
 	if (!mfd->panel_power_on || !bl_updated) {
 		unset_bl_level = bkl_lvl;
 		return;
@@ -786,19 +750,17 @@ void msm_fb_set_backlight(struct msm_fb_data_type *mfd, __u32 bkl_lvl)
 		unset_bl_level = 0;
 	}
 
-	msm_fb_scale_bl(&temp);
 	pdata = (struct msm_fb_panel_data *)mfd->pdev->dev.platform_data;
 
 	if ((pdata) && (pdata->set_backlight)) {
 		down(&mfd->sem);
-		if (bl_level_old == temp) {
+		if (bl_level_old == bkl_lvl) {
 			up(&mfd->sem);
 			return;
 		}
-		mfd->bl_level = temp;
-		pdata->set_backlight(mfd);
 		mfd->bl_level = bkl_lvl;
-		bl_level_old = temp;
+		pdata->set_backlight(mfd);
+		bl_level_old = mfd->bl_level;
 		up(&mfd->sem);
 	}
 }
@@ -3170,16 +3132,17 @@ static int msmfb_notify_update(struct fb_info *info, unsigned long *argp)
 
 	if (notify == NOTIFY_UPDATE_START) {
 		INIT_COMPLETION(mfd->msmfb_update_notify);
-		wait_for_completion_interruptible(&mfd->msmfb_update_notify);
+		ret = wait_for_completion_interruptible_timeout(
+		&mfd->msmfb_update_notify, 4*HZ);
 	} else {
 		INIT_COMPLETION(mfd->msmfb_no_update_notify);
-		wait_for_completion_interruptible(&mfd->msmfb_no_update_notify);
+		ret = wait_for_completion_interruptible_timeout(
+		&mfd->msmfb_no_update_notify, 4*HZ);
 	}
-	return 0;
+	return (ret > 0) ? 0 : -1;
 }
 
-static int msmfb_handle_pp_ioctl(struct msm_fb_data_type *mfd,
-						struct msmfb_mdp_pp *pp_ptr)
+static int msmfb_handle_pp_ioctl(struct msmfb_mdp_pp *pp_ptr)
 {
 	int ret = -1;
 
@@ -3220,11 +3183,6 @@ static int msmfb_handle_pp_ioctl(struct msm_fb_data_type *mfd,
 		}
 		break;
 #endif
-	case mdp_bl_scale_cfg:
-		ret = mdp_bl_scale_config(mfd, (struct mdp_bl_scale_data *)
-				&pp_ptr->data.bl_scale_data);
-		break;
-
 	default:
 		pr_warn("Unsupported request to MDP_PP IOCTL.\n");
 		ret = -EINVAL;
@@ -3233,7 +3191,24 @@ static int msmfb_handle_pp_ioctl(struct msm_fb_data_type *mfd,
 
 	return ret;
 }
-
+static int msmfb_handle_metadata_ioctl(struct msm_fb_data_type *mfd,
+				struct msmfb_metadata *metadata_ptr)
+{
+	int ret;
+	switch (metadata_ptr->op) {
+#ifdef CONFIG_FB_MSM_MDP40
+	case metadata_op_base_blend:
+		ret = mdp4_update_base_blend(mfd,
+						&metadata_ptr->data.blend_cfg);
+		break;
+#endif
+	default:
+		pr_warn("Unsupported request to MDP META IOCTL.\n");
+		ret = -EINVAL;
+		break;
+	}
+	return ret;
+}
 static int msm_fb_ioctl(struct fb_info *info, unsigned int cmd,
 			unsigned long arg)
 {
@@ -3251,6 +3226,7 @@ static int msm_fb_ioctl(struct fb_info *info, unsigned int cmd,
 #endif
 	struct mdp_page_protection fb_page_protection;
 	struct msmfb_mdp_pp mdp_pp;
+	struct msmfb_metadata mdp_metadata;
 	int ret = 0;
 
 	switch (cmd) {
@@ -3547,7 +3523,14 @@ static int msm_fb_ioctl(struct fb_info *info, unsigned int cmd,
 		if (ret)
 			return ret;
 
-		ret = msmfb_handle_pp_ioctl(mfd, &mdp_pp);
+		ret = msmfb_handle_pp_ioctl(&mdp_pp);
+		break;
+
+	case MSMFB_METADATA_SET:
+		ret = copy_from_user(&mdp_metadata, argp, sizeof(mdp_metadata));
+		if (ret)
+			return ret;
+		ret = msmfb_handle_metadata_ioctl(mfd, &mdp_metadata);
 		break;
 
 	default:
