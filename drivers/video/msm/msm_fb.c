@@ -342,6 +342,7 @@ static int msm_fb_probe(struct platform_device *pdev)
 	if (pdev_list_cnt >= MSM_FB_MAX_DEV_LIST)
 		return -ENOMEM;
 
+	vsync_cntrl.dev = mfd->fbi->dev;
 	mfd->panel_info.frame_count = 0;
 	mfd->bl_level = 0;
 	bl_scale = 1024;
@@ -1212,7 +1213,7 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 	var->yres = panel_info->yres;
 	var->xres_virtual = panel_info->xres;
 	var->yres_virtual = panel_info->yres * mfd->fb_page +
-+		((PAGE_SIZE - remainder)/fix->line_length) * mfd->fb_page;
+		((PAGE_SIZE - remainder)/fix->line_length) * mfd->fb_page;
 	var->bits_per_pixel = bpp * 8;	/* FrameBuffer color depth */
 	if (mfd->dest == DISPLAY_LCD) {
 		if (panel_info->type == MDDI_PANEL && panel_info->mddi.is_type1)
@@ -1649,8 +1650,7 @@ static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 	if (mfd->msmfb_no_update_notify_timer.function)
 		del_timer(&mfd->msmfb_no_update_notify_timer);
 
-	mfd->msmfb_no_update_notify_timer.expires =
-				jiffies + ((1000 * HZ) / 1000);
+	mfd->msmfb_no_update_notify_timer.expires = jiffies + (2 * HZ);
 	add_timer(&mfd->msmfb_no_update_notify_timer);
 	mutex_unlock(&msm_fb_notify_update_sem);
 
@@ -2697,6 +2697,27 @@ static int msmfb_blit(struct fb_info *info, void __user *p)
 	return 0;
 }
 
+static int msmfb_vsync_ctrl(struct fb_info *info, void __user *argp)
+{
+	int enable, ret;
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
+
+	ret = copy_from_user(&enable, argp, sizeof(enable));
+	if (ret) {
+		pr_err("%s:msmfb_overlay_vsync ioctl failed", __func__);
+		return ret;
+	}
+
+	if (mfd->vsync_ctrl)
+		mfd->vsync_ctrl(enable);
+	else {
+		pr_err("%s: Vsync IOCTL not supported", __func__);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 #ifdef CONFIG_FB_MSM_OVERLAY
 static int msmfb_overlay_get(struct fb_info *info, void __user *p)
 {
@@ -2759,25 +2780,6 @@ static int msmfb_overlay_unset(struct fb_info *info, unsigned long *argp)
 	return mdp4_overlay_unset(info, ndx);
 }
 
-static int msmfb_overlay_wait4vsync(struct fb_info *info, void __user *argp)
-{
-	int ret;
-	long long vtime;
-
-	ret = mdp4_overlay_wait4vsync(info, &vtime);
-	if (ret) {
-		pr_err("%s: ioctl failed\n", __func__);
-		return ret;
-	}
-
-	if (copy_to_user(argp, &vtime, sizeof(vtime))) {
-		pr_err("%s: copy2user failed\n", __func__);
-		return -EFAULT;
-	}
-
-	return 0;
-}
-
 static int msmfb_overlay_vsync_ctrl(struct fb_info *info, void __user *argp)
 {
 	int ret;
@@ -2836,8 +2838,7 @@ static int msmfb_overlay_play(struct fb_info *info, unsigned long *argp)
 	if (mfd->msmfb_no_update_notify_timer.function)
 		del_timer(&mfd->msmfb_no_update_notify_timer);
 
-	mfd->msmfb_no_update_notify_timer.expires =
-				jiffies + ((1000 * HZ) / 1000);
+	mfd->msmfb_no_update_notify_timer.expires = jiffies + (2 * HZ);
 	add_timer(&mfd->msmfb_no_update_notify_timer);
 	mutex_unlock(&msm_fb_notify_update_sem);
 
@@ -3205,16 +3206,6 @@ static int msm_fb_ioctl(struct fb_info *info, unsigned int cmd,
 
 	switch (cmd) {
 #ifdef CONFIG_FB_MSM_OVERLAY
-	case FBIO_WAITFORVSYNC:
-		down(&msm_fb_ioctl_ppp_sem);
-		ret = msmfb_overlay_wait4vsync(info, argp);
-		up(&msm_fb_ioctl_ppp_sem);
-		break;
-	case MSMFB_OVERLAY_VSYNC_CTRL:
-		down(&msm_fb_ioctl_ppp_sem);
-		ret = msmfb_overlay_vsync_ctrl(info, argp);
-		up(&msm_fb_ioctl_ppp_sem);
-		break;
 	case MSMFB_OVERLAY_GET:
 		down(&msm_fb_ioctl_ppp_sem);
 		ret = msmfb_overlay_get(info, argp);
@@ -3283,6 +3274,15 @@ static int msm_fb_ioctl(struct fb_info *info, unsigned int cmd,
 		ret = msmfb_overlay_ioctl_writeback_terminate(info);
 		break;
 #endif
+	case MSMFB_VSYNC_CTRL:
+	case MSMFB_OVERLAY_VSYNC_CTRL:
+		down(&msm_fb_ioctl_ppp_sem);
+		if (mdp_rev >= MDP_REV_40)
+			ret = msmfb_overlay_vsync_ctrl(info, argp);
+		else
+			ret = msmfb_vsync_ctrl(info, argp);
+		up(&msm_fb_ioctl_ppp_sem);
+		break;
 	case MSMFB_BLIT:
 		down(&msm_fb_ioctl_ppp_sem);
 		ret = msmfb_blit(info, argp);
