@@ -45,6 +45,7 @@
 #define MSM_ROTATOR_START			(MSM_ROTATOR_BASE+0x0030)
 #define MSM_ROTATOR_MAX_BURST_SIZE		(MSM_ROTATOR_BASE+0x0050)
 #define MSM_ROTATOR_HW_VERSION			(MSM_ROTATOR_BASE+0x0070)
+#define MSM_ROTATOR_SW_RESET			(MSM_ROTATOR_BASE+0x0074)
 #define MSM_ROTATOR_SRC_SIZE			(MSM_ROTATOR_BASE+0x1108)
 #define MSM_ROTATOR_SRCP0_ADDR			(MSM_ROTATOR_BASE+0x110c)
 #define MSM_ROTATOR_SRCP1_ADDR			(MSM_ROTATOR_BASE+0x1110)
@@ -90,21 +91,20 @@
 #define VERSION_KEY_MASK 0xFFFFFF00
 #define MAX_DOWNSCALE_RATIO 3
 
-#define ROTATOR_REVISION_V0 0 
-#define ROTATOR_REVISION_V1 1 
-#define ROTATOR_REVISION_V2 2 
-#define ROTATOR_REVISION_NONE 0xffffffff 
+#define ROTATOR_REVISION_V0		0
+#define ROTATOR_REVISION_V1		1
+#define ROTATOR_REVISION_V2		2
+#define ROTATOR_REVISION_NONE	0xffffffff
 
-uint32_t rotator_hw_revision; 
+uint32_t rotator_hw_revision;
 
-/* 
-* rotator_hw_revision: 
-* 0 == 7x30 
-* 1 == 8x60 
-* 2 == 8960 
-* 
-*/ 
-
+/*
+ * rotator_hw_revision:
+ * 0 == 7x30
+ * 1 == 8x60
+ * 2 == 8960
+ *
+ */
 struct tile_parm {
 	unsigned int width;  /* tile's width */
 	unsigned int height; /* tile's height */
@@ -339,6 +339,8 @@ static int get_bpp(int format)
 		return 1;
 
 	case MDP_RGB_888:
+	case MDP_YCBCR_H1V1:
+	case MDP_YCRCB_H1V1:
 		return 3;
 
 	case MDP_YCRYCB_H2V1:
@@ -385,11 +387,14 @@ static int msm_rotator_get_plane_sizes(uint32_t format,	uint32_t w, uint32_t h,
 	case MDP_RGB_565:
 	case MDP_BGR_565:
 	case MDP_YCRYCB_H2V1:
+	case MDP_YCBCR_H1V1:
+	case MDP_YCRCB_H1V1:
 		p->num_planes = 1;
 		p->plane_size[0] = w * h * get_bpp(format);
 		break;
 	case MDP_Y_CRCB_H2V1:
 	case MDP_Y_CBCR_H2V1:
+	case MDP_Y_CRCB_H1V2:
 		p->num_planes = 2;
 		p->plane_size[0] = w * h;
 		p->plane_size[1] = w * h;
@@ -535,9 +540,9 @@ static int msm_rotator_ycxcx_h2v2(struct msm_rotator_img_info *info,
 		return -EINVAL;
 
 	/* rotator expects YCbCr for planar input format */
-	if ((info->src.format == MDP_Y_CR_CB_H2V2 || 
-	    info->src.format == MDP_Y_CR_CB_GH2V2) && 
-	    rotator_hw_revision < ROTATOR_REVISION_V2) 
+	if ((info->src.format == MDP_Y_CR_CB_H2V2 ||
+	    info->src.format == MDP_Y_CR_CB_GH2V2) &&
+	    rotator_hw_revision < ROTATOR_REVISION_V2)
 		swap(in_chroma_paddr, in_chroma2_paddr);
 
 	iowrite32(in_paddr, MSM_ROTATOR_SRCP0_ADDR);
@@ -620,9 +625,12 @@ static int msm_rotator_ycrycb(struct msm_rotator_img_info *info,
 	int bpp;
 	uint32_t dst_format;
 
-	if (info->src.format == MDP_YCRYCB_H2V1)
-		dst_format = MDP_Y_CRCB_H2V1;
-	else
+	if (info->src.format == MDP_YCRYCB_H2V1) {
+		if (info->rotations & MDP_ROT_90)
+			dst_format = MDP_Y_CRCB_H1V2;
+		else
+			dst_format = MDP_Y_CRCB_H2V1;
+	} else
 		return -EINVAL;
 
 	if (info->dst.format != dst_format)
@@ -733,6 +741,8 @@ static int msm_rotator_rgb_types(struct msm_rotator_img_info *info,
 			break;
 
 		case MDP_RGB_888:
+		case MDP_YCBCR_H1V1:
+		case MDP_YCRCB_H1V1:
 			iowrite32(GET_PACK_PATTERN(0, CLR_R, CLR_G, CLR_B, 8),
 				  MSM_ROTATOR_SRC_UNPACK_PATTERN1);
 			iowrite32(GET_PACK_PATTERN(0, CLR_R, CLR_G, CLR_B, 8),
@@ -894,8 +904,7 @@ static int msm_rotator_do_rotate(unsigned long arg)
 			break;
 
 	if (s == MAX_SESSIONS) {
-		dev_dbg(msm_rotator_dev->device,
-			"%s() : Attempt to use invalid session_id %d\n",
+		pr_err("%s() : Attempt to use invalid session_id %d\n",
 			__func__, s);
 		rc = -EINVAL;
 		goto do_rotate_unlock_mutex;
@@ -1077,6 +1086,8 @@ static int msm_rotator_do_rotate(unsigned long arg)
 	case MDP_XRGB_8888:
 	case MDP_BGRA_8888:
 	case MDP_RGBX_8888:
+	case MDP_YCBCR_H1V1:
+	case MDP_YCRCB_H1V1:
 		rc = msm_rotator_rgb_types(msm_rotator_dev->img_info[s],
 					   in_paddr, out_paddr,
 					   use_imem,
@@ -1115,11 +1126,13 @@ static int msm_rotator_do_rotate(unsigned long arg)
 		break;
 	default:
 		rc = -EINVAL;
+		pr_err("%s(): Unsupported format %u\n", __func__, format);
 		goto do_rotate_exit;
 	}
 
 	if (rc != 0) {
 		msm_rotator_dev->last_session_idx = INVALID_SESSION;
+		pr_err("%s(): Invalid session error\n", __func__);
 		goto do_rotate_exit;
 	}
 
@@ -1131,8 +1144,11 @@ static int msm_rotator_do_rotate(unsigned long arg)
 	wait_event(msm_rotator_dev->wq,
 		   (msm_rotator_dev->processing == 0));
 	status = (unsigned char)ioread32(MSM_ROTATOR_INTR_STATUS);
-	if ((status & 0x03) != 0x01)
+	if ((status & 0x03) != 0x01) {
+		pr_err("%s(): AXI Bus Error, issuing SW_RESET\n", __func__);
+		iowrite32(0x1, MSM_ROTATOR_SW_RESET);
 		rc = -EFAULT;
+	}
 	iowrite32(0, MSM_ROTATOR_INTR_ENABLE);
 	iowrite32(3, MSM_ROTATOR_INTR_CLEAR);
 
@@ -1231,17 +1247,22 @@ static int msm_rotator_start(unsigned long arg, int pid)
 	case MDP_Y_CRCB_H2V2:
 	case MDP_Y_CBCR_H2V1:
 	case MDP_Y_CRCB_H2V1:
+	case MDP_YCBCR_H1V1:
+	case MDP_YCRCB_H1V1:
 		info.dst.format = info.src.format;
 		break;
 	case MDP_YCRYCB_H2V1:
-		info.dst.format = MDP_Y_CRCB_H2V1;
+		if (info.rotations & MDP_ROT_90)
+			info.dst.format = MDP_Y_CRCB_H1V2;
+		else
+			info.dst.format = MDP_Y_CRCB_H2V1;
 		break;
 	case MDP_Y_CB_CR_H2V2:
 	case MDP_Y_CBCR_H2V2_TILE:
 		info.dst.format = MDP_Y_CBCR_H2V2;
 		break;
 	case MDP_Y_CR_CB_H2V2:
-	case MDP_Y_CR_CB_GH2V2:	
+	case MDP_Y_CR_CB_GH2V2:
 	case MDP_Y_CRCB_H2V2_TILE:
 		info.dst.format = MDP_Y_CRCB_H2V2;
 		break;
@@ -1288,14 +1309,14 @@ static int msm_rotator_start(unsigned long arg, int pid)
 			msm_rotator_dev->img_info[first_free_index];
 		*(msm_rotator_dev->img_info[first_free_index]) = info;
 		msm_rotator_dev->pid_list[first_free_index] = pid;
-
-		if (copy_to_user((void __user *)arg, &info, sizeof(info)))
-			rc = -EFAULT;
 	} else if (s == MAX_SESSIONS) {
 		dev_dbg(msm_rotator_dev->device, "%s: all sessions in use\n",
 			__func__);
 		rc = -EBUSY;
 	}
+
+	if (rc == 0 && copy_to_user((void __user *)arg, &info, sizeof(info)))
+		rc = -EFAULT;
 
 rotator_start_exit:
 	mutex_unlock(&msm_rotator_dev->rotator_lock);
@@ -1554,12 +1575,12 @@ static int __devinit msm_rotator_probe(struct platform_device *pdev)
 		pr_debug("%s: invalid HW version ver 0x%x\n",
 			DRIVER_NAME, ver);
 
-        rotator_hw_revision = ver; 
-        rotator_hw_revision >>= 16; /* bit 31:16 */ 
-        rotator_hw_revision &= 0xff; 
+	rotator_hw_revision = ver;
+	rotator_hw_revision >>= 16;     /* bit 31:16 */
+	rotator_hw_revision &= 0xff;
 
-        pr_info("%s: rotator_hw_revision=%x\n", 
-        __func__, rotator_hw_revision); 
+	pr_info("%s: rotator_hw_revision=%x\n",
+		__func__, rotator_hw_revision);
 
 	msm_rotator_dev->irq = platform_get_irq(pdev, 0);
 	if (msm_rotator_dev->irq < 0) {
