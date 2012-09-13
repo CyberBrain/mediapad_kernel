@@ -50,6 +50,7 @@ static struct clk *mdp_pclk;
 static struct clk *mdp_lut_clk;
 int mdp_rev;
 
+static struct platform_device *mdp_init_pdev;
 static struct regulator *footswitch;
 static unsigned int mdp_footswitch_on;
 
@@ -1316,9 +1317,6 @@ void mdp_pipe_kickoff(uint32 term, struct msm_fb_data_type *mfd)
 		/* DMA update timestamp */
 		mdp_dma2_last_update_time = ktime_get_real();
 		/* let's turn on DMA2 block */
-#if 0
-		mdp_pipe_ctrl(MDP_DMA2_BLOCK, MDP_BLOCK_POWER_ON, FALSE);
-#endif
 #ifdef CONFIG_FB_MSM_MDP22
 		outpdw(MDP_CMD_DEBUG_ACCESS_BASE + 0x0044, 0x0);/* start DMA */
 #else
@@ -1366,15 +1364,6 @@ void mdp_pipe_kickoff(uint32 term, struct msm_fb_data_type *mfd)
 		outpdw(MDP_BASE + 0x004C, 0x0);
 	}
 #endif
-}
-
-void set_cont_splashScreen_status(int status)
-{
-	if (!status)
-		mdp_pipe_ctrl(MDP_CMD_BLOCK, MDP_BLOCK_POWER_ON, FALSE);
-	else
-		mdp_pipe_ctrl(MDP_CMD_BLOCK, MDP_BLOCK_POWER_OFF, FALSE);
-
 }
 
 static int mdp_clk_rate;
@@ -2047,7 +2036,8 @@ unsigned long mdp_perf_level2clk_rate(uint32 perf_level)
 	return clk_rate;
 }
 
-static int mdp_irq_clk_setup(char cont_splashScreen)
+static int mdp_irq_clk_setup(struct platform_device *pdev,
+	char cont_splashScreen)
 {
 	int ret;
 
@@ -2070,7 +2060,7 @@ static int mdp_irq_clk_setup(char cont_splashScreen)
 		mdp_footswitch_on = 1;
 	}
 
-	mdp_clk = clk_get(NULL, "mdp_clk");
+	mdp_clk = clk_get(&pdev->dev, "core_clk");
 	if (IS_ERR(mdp_clk)) {
 		ret = PTR_ERR(mdp_clk);
 		printk(KERN_ERR "can't get mdp_clk error:%d!\n", ret);
@@ -2078,12 +2068,12 @@ static int mdp_irq_clk_setup(char cont_splashScreen)
 		return ret;
 	}
 
-	mdp_pclk = clk_get(NULL, "mdp_pclk");
+	mdp_pclk = clk_get(&pdev->dev, "iface_clk");
 	if (IS_ERR(mdp_pclk))
 		mdp_pclk = NULL;
 
 	if (mdp_rev == MDP_REV_42) {
-		mdp_lut_clk = clk_get(NULL, "lut_mdp");
+		mdp_lut_clk = clk_get(&pdev->dev, "lut_clk");
 		if (IS_ERR(mdp_lut_clk)) {
 			ret = PTR_ERR(mdp_lut_clk);
 			pr_err("can't get mdp_clk error:%d!\n", ret);
@@ -2131,9 +2121,10 @@ static int mdp_probe(struct platform_device *pdev)
 #if defined(CONFIG_FB_MSM_MIPI_DSI) && defined(CONFIG_FB_MSM_MDP40)
 	struct mipi_panel_info *mipi;
 #endif
+	static int contSplash_update_done;
 
 	if ((pdev->id == 0) && (pdev->num_resources > 0)) {
-
+		mdp_init_pdev = pdev;
 		mdp_pdata = pdev->dev.platform_data;
 
 		size =  resource_size(&pdev->resource[0]);
@@ -2153,7 +2144,7 @@ static int mdp_probe(struct platform_device *pdev)
 
 		mdp_rev = mdp_pdata->mdp_rev;
 
-		rc = mdp_irq_clk_setup(mdp_pdata->cont_splash_enabled);
+		rc = mdp_irq_clk_setup(pdev, mdp_pdata->cont_splash_enabled);
 
 		if (rc)
 			return rc;
@@ -2198,13 +2189,16 @@ static int mdp_probe(struct platform_device *pdev)
 	mfd->mdp_rev = mdp_rev;
 
 	if (mdp_pdata) {
-		if (mdp_pdata->cont_splash_enabled)
+		if (mdp_pdata->cont_splash_enabled) {
 			mfd->cont_splash_done = 0;
-		else
+			if (!contSplash_update_done) {
+				mdp_pipe_ctrl(MDP_CMD_BLOCK,
+					MDP_BLOCK_POWER_ON, FALSE);
+				contSplash_update_done = 1;
+			}
+		} else
 			mfd->cont_splash_done = 1;
 	}
-
-	set_cont_splashScreen_status(mfd->cont_splash_done);
 
 	mfd->ov0_wb_buf = MDP_ALLOC(sizeof(struct mdp_buf_type));
 	mfd->ov1_wb_buf = MDP_ALLOC(sizeof(struct mdp_buf_type));
@@ -2308,7 +2302,7 @@ static int mdp_probe(struct platform_device *pdev)
 
 		mdp4_display_intf_sel(if_no, intf);
 #endif
-		mdp_config_vsync(mfd);
+		mdp_config_vsync(mdp_init_pdev, mfd);
 		break;
 
 #ifdef CONFIG_FB_MSM_MIPI_DSI
@@ -2381,8 +2375,10 @@ static int mdp_probe(struct platform_device *pdev)
 			rc = -ENODEV;
 			goto mdp_probe_err;
 		}
+		INIT_WORK(&mfd->dma_update_worker,
+			mdp_lcd_update_workqueue_handler);
 #endif
-		mdp_config_vsync(mfd);
+		mdp_config_vsync(mdp_init_pdev, mfd);
 		break;
 #endif
 
