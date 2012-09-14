@@ -637,6 +637,12 @@ static void mdp4_dtv_do_blt(struct msm_fb_data_type *mfd, int enable)
 		return;
 	}
 
+	if (!dtv_pipe) {
+		pr_debug("%s: no mixer1 base layer pipe allocated!\n",
+			 __func__);
+		return;
+	}
+
 	spin_lock_irqsave(&mdp_spin_lock, flag);
 	if (enable && dtv_pipe->blt_addr == 0) {
 		dtv_pipe->blt_addr = mfd->ov1_wb_buf->phys_addr;
