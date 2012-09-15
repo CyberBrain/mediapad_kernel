@@ -3,7 +3,7 @@ export KBUILD_BUILD_USER="Mediapad EX"
 export CROSS_COMPILE="/home/ubu/arm-eabi-4.4.3/bin/arm-eabi-"
 
 ROOTFS_PATH="/home/ubu/mediapad/ramdisk"
-ramdisk_dir=/home/ubu/mediapad/ramdisk/ramdisk.gz
+ramdisk_dir=/home/ubu/mediapad/ramdisk/ramdiskjb.gz
 CMDLINE="console=console=ttyHSL0,115200,n8 androidboot.hardware=hws7300u vmalloc=578M kgsl.ptcount=16"
 BASE="0x40300000"
 
