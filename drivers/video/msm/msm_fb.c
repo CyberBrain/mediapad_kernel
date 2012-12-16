@@ -61,6 +61,7 @@ extern int load_565rle_image(char *filename, bool bf_supported);
 static unsigned char *fbram;
 static unsigned char *fbram_phys;
 static int fbram_size;
+bool device_suspended = FALSE;
 static boolean bf_supported;
 
 static struct platform_device *pdev_list[MSM_FB_MAX_DEV_LIST];
@@ -74,9 +75,7 @@ int vsync_mode = 1;
 static struct fb_info *fbi_list[MAX_FBI_LIST];
 static int fbi_list_index;
 
-//static
- 	struct msm_fb_data_type *mfd_list[MAX_FBI_LIST];
-EXPORT_SYMBOL(mfd_list);
+static struct msm_fb_data_type *mfd_list[MAX_FBI_LIST];
 static int mfd_list_index;
 
 static u32 msm_fb_pseudo_palette[16] = {
@@ -200,9 +199,40 @@ unsigned char hdmi_prim_display;
 int msm_fb_detect_client(const char *name)
 {
 	int ret = 0;
+	u32 len;
 #ifdef CONFIG_FB_MSM_MDDI_AUTO_DETECT
 	u32 id;
 #endif
+	if (!msm_fb_pdata)
+		return -EPERM;
+
+	len = strnlen(name, PANEL_NAME_MAX_LEN);
+	if (strnlen(msm_fb_pdata->prim_panel_name, PANEL_NAME_MAX_LEN)) {
+		pr_err("\n name = %s, prim_display = %s",
+			name, msm_fb_pdata->prim_panel_name);
+		if (!strncmp((char *)msm_fb_pdata->prim_panel_name,
+			name, len)) {
+			if (!strncmp((char *)msm_fb_pdata->prim_panel_name,
+				"hdmi_msm", len))
+				hdmi_prim_display = 1;
+			return 0;
+		} else {
+			ret = -EPERM;
+		}
+	}
+
+	if (strnlen(msm_fb_pdata->ext_panel_name, PANEL_NAME_MAX_LEN)) {
+		pr_err("\n name = %s, ext_display = %s",
+			name, msm_fb_pdata->ext_panel_name);
+		if (!strncmp((char *)msm_fb_pdata->ext_panel_name, name, len))
+			return 0;
+		else
+			ret = -EPERM;
+	}
+
+	if (ret)
+		return ret;
+
 	ret = -EPERM;
 	if (msm_fb_pdata && msm_fb_pdata->detect_client) {
 		ret = msm_fb_pdata->detect_client(name);
@@ -469,6 +499,28 @@ static int msm_fb_suspend(struct platform_device *pdev, pm_message_t state)
 #define msm_fb_suspend NULL
 #endif
 
+static void msm_fb_shutdown(struct platform_device *pdev)
+{
+	struct msm_fb_data_type *mfd;
+	int ret = 0;
+	MSM_FB_DEBUG("msm_fb_shutdown\n");
+
+	mfd = (struct msm_fb_data_type *)platform_get_drvdata(pdev);
+	if (mfd) {
+		if (mfd->op_enable) {
+			ret = msm_fb_blank_sub(FB_BLANK_POWERDOWN, mfd->fbi,
+					     mfd->op_enable);
+		}
+
+		if (ret)
+			MSM_FB_INFO
+				("msm_fb_shutdown: can't turn off display!\n");
+
+		mfd->op_enable = FALSE;
+		mdp_pipe_ctrl(MDP_MASTER_BLOCK, MDP_BLOCK_POWER_OFF, FALSE);
+	}
+}
+
 static int msm_fb_suspend_sub(struct msm_fb_data_type *mfd)
 {
 	int ret = 0;
@@ -609,18 +661,14 @@ static int msm_fb_ext_suspend(struct device *dev)
 	struct msm_fb_data_type *mfd = dev_get_drvdata(dev);
 	int ret = 0;
 
-	if (hdmi_prim_display) {
-		MSM_FB_INFO("%s: hdmi primary handles early suspend only\n",
-			__func__);
-		return 0;
-	}
-
 	if ((!mfd) || (mfd->key != MFD_KEY))
 		return 0;
 
 	if (mfd->panel_info.type == HDMI_PANEL ||
-		mfd->panel_info.type == DTV_PANEL)
+		mfd->panel_info.type == DTV_PANEL) {
+		device_suspended = TRUE;
 		ret = msm_fb_suspend_sub(mfd);
+	}
 
 	return ret;
 }
@@ -630,18 +678,14 @@ static int msm_fb_ext_resume(struct device *dev)
 	struct msm_fb_data_type *mfd = dev_get_drvdata(dev);
 	int ret = 0;
 
-	if (hdmi_prim_display) {
-		MSM_FB_INFO("%s: hdmi primary handles early resume only\n",
-			__func__);
-		return 0;
-	}
-
 	if ((!mfd) || (mfd->key != MFD_KEY))
 		return 0;
 
 	if (mfd->panel_info.type == HDMI_PANEL ||
-		mfd->panel_info.type == DTV_PANEL)
+		mfd->panel_info.type == DTV_PANEL) {
 		ret = msm_fb_resume_sub(mfd);
+		device_suspended = FALSE;
+	}
 
 	return ret;
 }
@@ -665,7 +709,7 @@ static struct platform_driver msm_fb_driver = {
 	.suspend = msm_fb_suspend,
 	.resume = msm_fb_resume,
 #endif
-	.shutdown = NULL,
+	.shutdown = msm_fb_shutdown,
 	.driver = {
 		   /* Driver name must match the device name added in platform.c. */
 		   .name = "msm_fb",
@@ -1836,8 +1880,10 @@ static int msm_fb_set_par(struct fb_info *info)
 {
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
 	struct fb_var_screeninfo *var = &info->var;
+	struct msm_fb_panel_data *pdata = NULL;
 	int old_imgType;
 	int blank = 0;
+	static __u32 video_resolution = HDMI_VFRMT_1920x1080p30_16_9;
 
 	old_imgType = mfd->fb_imgType;
 	switch (var->bits_per_pixel) {
@@ -1879,6 +1925,17 @@ static int msm_fb_set_par(struct fb_info *info)
 		mfd->var_yres = var->yres;
 		mfd->var_pixclock = var->pixclock;
 		blank = 1;
+	}
+	pdata = (struct msm_fb_panel_data *)mfd->pdev->dev.platform_data;
+	if (pdata && pdata->panel_info.pdest == DISPLAY_2) {
+		if (var->reserved[3] &&
+			(var->reserved[3] != video_resolution)) {
+			video_resolution = var->reserved[3];
+			mfd->var_xres = var->xres;
+			mfd->var_yres = var->yres;
+			mfd->var_pixclock = var->pixclock;
+			blank = 1;
+		}
 	}
 	mfd->fbi->fix.line_length = msm_fb_line_length(mfd->index, var->xres,
 						       var->bits_per_pixel/8);
