@@ -179,7 +179,7 @@ void mdp4_iommu_unmap(struct mdp4_overlay_pipe *pipe)
 			if (iom_pipe_info->mark_unmap) {
 				if (iom_pipe_info->ihdl[i]) {
 					if (pipe->mixer_num == MDP4_MIXER1)
-						mdp4_overlay_dtv_wait4vsync();
+						//mdp4_overlay_dtv_wait4vsync();
 					pr_debug("%s(): mixer %u, pipe %u, plane %u, "
 						"ihdl %p\n", __func__,
 						pipe->mixer_num, j + 1, i,
