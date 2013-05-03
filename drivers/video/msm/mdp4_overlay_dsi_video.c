@@ -36,6 +36,7 @@
 
 static int first_pixel_start_x;
 static int first_pixel_start_y;
+static int dsi_video_enabled;
 
 static struct mdp4_overlay_pipe *dsi_pipe;
 static struct completion dsi_video_comp;
@@ -280,10 +281,6 @@ int mdp4_dsi_video_on(struct platform_device *pdev)
 
 	ret = panel_next_on(pdev);
 	if (ret == 0) {
-		/* enable DSI block */
-		MDP_OUTP(MDP_BASE + DSI_VIDEO_BASE, 1);
-		mdp_pipe_ctrl(MDP_OVERLAY0_BLOCK, MDP_BLOCK_POWER_ON, FALSE);
-
 		if (display_on != NULL) {
 			msleep(50);
 			display_on(pdev);
@@ -303,6 +300,7 @@ int mdp4_dsi_video_off(struct platform_device *pdev)
 	mdp_pipe_ctrl(MDP_CMD_BLOCK, MDP_BLOCK_POWER_ON, FALSE);
         mdp4_mixer_pipe_cleanup(dsi_pipe->mixer_num);
 	MDP_OUTP(MDP_BASE + DSI_VIDEO_BASE, 0);
+        dsi_video_enabled = 0;
 	/* MDP cmd block disable */
 	mdp_pipe_ctrl(MDP_CMD_BLOCK, MDP_BLOCK_POWER_OFF, FALSE);
 	mdp_pipe_ctrl(MDP_OVERLAY0_BLOCK, MDP_BLOCK_POWER_OFF, FALSE);
@@ -501,6 +499,18 @@ static void mdp4_overlay_dsi_video_dma_busy_wait(struct msm_fb_data_type *mfd)
 	pr_debug("%s: done pid=%d\n", __func__, current->pid);
 }
 
+void mdp4_overlay_dsi_video_start(void)
+{
+	if (!dsi_video_enabled) {
+		/* enable DSI block */
+		mdp_pipe_ctrl(MDP_CMD_BLOCK, MDP_BLOCK_POWER_ON, FALSE);
+		MDP_OUTP(MDP_BASE + DSI_VIDEO_BASE, 1);
+		mdp_pipe_ctrl(MDP_OVERLAY0_BLOCK, MDP_BLOCK_POWER_ON, FALSE);
+		mdp_pipe_ctrl(MDP_CMD_BLOCK, MDP_BLOCK_POWER_OFF, FALSE);
+		dsi_video_enabled = 1;
+	}
+}
+
 void mdp4_overlay_dsi_video_vsync_push(struct msm_fb_data_type *mfd,
 			struct mdp4_overlay_pipe *pipe)
 {
@@ -697,9 +707,12 @@ void mdp4_dsi_video_overlay(struct msm_fb_data_type *mfd)
 		pipe->srcp0_addr = (uint32)(buf + buf_offset);
 	}
 	mdp4_overlay_rgb_setup(pipe);
-	mdp4_mixer_stage_up(pipe);
-        mdp4_overlay_reg_flush(pipe, 0);
-	mdp4_overlay_dsi_video_vsync_push(mfd, pipe);
+
+	mdp4_overlay_reg_flush(pipe, 0);
+        mdp4_mixer_stage_up(pipe);
+        mdp4_overlay_dsi_video_start();
+        mdp4_overlay_dsi_video_vsync_push(mfd, pipe);
+
         mdp4_iommu_unmap(pipe);
 	mutex_unlock(&mfd->dma->ov_mutex);
 }
