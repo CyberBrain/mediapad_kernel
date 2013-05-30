@@ -98,6 +98,8 @@ enum
 	KERN_SPARC_REBOOT=21,	/* reboot command on Sparc */
 	KERN_CTLALTDEL=22,	/* int: allow ctl-alt-del to reboot */
 	KERN_PRINTK=23,		/* struct: control printk logging parameters */
+        KERN_SCHED_LATENCY_NS=400000,		/* adjusts latency */
+	KERN_SCHED_WAKEUP_GRANULARITY_NS=100000,		/* adjusts wakeup speed */
 	KERN_NAMETRANS=24,	/* Name translation */
 	KERN_PPC_HTABRECLAIM=25, /* turn htab reclaimation on/off on PPC */
 	KERN_PPC_ZEROPAGED=26,	/* turn idle page zeroing on/off on PPC */
@@ -154,6 +156,10 @@ enum
 	KERN_NMI_WATCHDOG=75, /* int: enable/disable nmi watchdog */
 	KERN_PANIC_ON_NMI=76, /* int: whether we will panic on an unrecovered */
 	KERN_BOOT_REASON = 77, /* int: identify reason system was booted */
+	KERN_HUNG_TASK_TIMEOUT_SECS = 30, /* LZ tweaks */
+	KERN_SCHED_COMPAT_YIELD = 1, /* LZ tweaks */
+	KERN_SCHED_SHARES_RATELIMIT = 256000, /* LZ tweaks */
+	KERN_THREAD_MAX = 5000, /* LZ tweaks */
 };
 
 
@@ -167,26 +173,27 @@ enum
 	VM_UNUSED4=4,		/* Spare */
 	VM_OVERCOMMIT_MEMORY=5,	/* Turn off the virtual memory safety limit */
 	VM_UNUSED5=6,		/* was: struct: Set buffer memory thresholds */
-	VM_UNUSED7=7,		/* was: struct: Set cache memory thresholds */
+	VM_DROP_CACHES=3,		/* Set cache memory thresholds */
 	VM_UNUSED8=8,		/* was: struct: Control kswapd behaviour */
 	VM_UNUSED9=9,		/* was: struct: Set page table cache parameters */
 	VM_PAGE_CLUSTER=10,	/* int: set number of pages to swap together */
-	VM_DIRTY_BACKGROUND=11,	/* dirty_background_ratio */
-	VM_DIRTY_RATIO=12,	/* dirty_ratio */
-	VM_DIRTY_WB_CS=13,	/* dirty_writeback_centisecs */
-	VM_DIRTY_EXPIRE_CS=14,	/* dirty_expire_centisecs */
+	VM_DIRTY_BACKGROUND=60,	/* dirty_background_ratio */
+	VM_DIRTY_RATIO=95,	/* dirty_ratio */
+	VM_DIRTY_WB_CS=2000,	/* dirty_writeback_centisecs */
+	VM_DIRTY_EXPIRE_CS=1000,	/* dirty_expire_centisecs */
 	VM_NR_PDFLUSH_THREADS=15, /* nr_pdflush_threads */
 	VM_OVERCOMMIT_RATIO=16, /* percent of RAM to allow overcommit in */
 	VM_PAGEBUF=17,		/* struct: Control pagebuf parameters */
 	VM_HUGETLB_PAGES=18,	/* int: Number of available Huge Pages */
 	VM_SWAPPINESS=19,	/* Tendency to steal mapped memory */
 	VM_LOWMEM_RESERVE_RATIO=20,/* reservation ratio for lower memory zones */
-	VM_MIN_FREE_KBYTES=21,	/* Minimum free kilobytes to maintain */
+	VM_MIN_FREE_KBYTES=15360,	/* Minimum free kilobytes to maintain */
+	VM_OOM_KILL_ALLOCATING_TASK=0,	/* Number of tasks to kill when out of memory */
 	VM_MAX_MAP_COUNT=22,	/* int: Maximum number of mmaps/address-space */
 	VM_LAPTOP_MODE=23,	/* vm laptop mode */
-	VM_BLOCK_DUMP=24,	/* block dump mode */
+	VM_BLOCK_DUMP=0,	/* block dump mode */
 	VM_HUGETLB_GROUP=25,	/* permitted hugetlb group */
-	VM_VFS_CACHE_PRESSURE=26, /* dcache/icache reclaim pressure */
+	VM_VFS_CACHE_PRESSURE=10, /* dcache/icache reclaim pressure */
 	VM_LEGACY_VA_LAYOUT=27, /* legacy/compatibility virtual address space layout */
 	VM_SWAP_TOKEN_TIMEOUT=28, /* default time for token time out */
 	VM_DROP_PAGECACHE=29,	/* int: nuke lots of pagecache */
@@ -196,6 +203,8 @@ enum
 	VM_PANIC_ON_OOM=33,	/* panic at out-of-memory */
 	VM_VDSO_ENABLED=34,	/* map VDSO into new processes? */
 	VM_MIN_SLAB=35,		 /* Percent pages ignored by zone reclaim */
+        VM_MIN_FREE_ORDER_SHIFT=4,		/* Battery enhancement related */
+	VM_OOM_DUMP_TASKS=1,		/* Number of tasks to dump when out of memory*/
 };
 
 
@@ -254,16 +263,16 @@ enum
 /* /proc/sys/net/core */
 enum
 {
-	NET_CORE_WMEM_MAX=1,
-	NET_CORE_RMEM_MAX=2,
-	NET_CORE_WMEM_DEFAULT=3,
-	NET_CORE_RMEM_DEFAULT=4,
+	NET_CORE_WMEM_MAX=1048576,
+	NET_CORE_RMEM_MAX=1048576,
+	NET_CORE_WMEM_DEFAULT=262144,
+	NET_CORE_RMEM_DEFAULT=262144,
 /* was	NET_CORE_DESTROY_DELAY */
 	NET_CORE_MAX_BACKLOG=6,
 	NET_CORE_FASTROUTE=7,
 	NET_CORE_MSG_COST=8,
 	NET_CORE_MSG_BURST=9,
-	NET_CORE_OPTMEM_MAX=10,
+	NET_CORE_OPTMEM_MAX=20480,
 	NET_CORE_HOT_LIST_LENGTH=11,
 	NET_CORE_DIVERT_VERSION=12,
 	NET_CORE_NO_CONG_THRESH=13,
@@ -288,7 +297,7 @@ enum
 {
 	NET_UNIX_DESTROY_DELAY=1,
 	NET_UNIX_DELETE_DELAY=2,
-	NET_UNIX_MAX_DGRAM_QLEN=3,
+	NET_UNIX_MAX_DGRAM_QLEN=50,
 };
 
 /* /proc/sys/net/netfilter */
@@ -341,7 +350,7 @@ enum
 	NET_IPV4_FIB_HASH=19,
 	NET_IPV4_NETFILTER=20,
 
-	NET_IPV4_TCP_TIMESTAMPS=33,
+	NET_IPV4_TCP_TIMESTAMPS=0,
 	NET_IPV4_TCP_WINDOW_SCALING=34,
 	NET_IPV4_TCP_SACK=35,
 	NET_IPV4_TCP_RETRANS_COLLAPSE=36,
@@ -357,22 +366,23 @@ enum
 	NET_IPV4_TCP_KEEPALIVE_PROBES=46,
 	NET_IPV4_TCP_RETRIES1=47,
 	NET_IPV4_TCP_RETRIES2=48,
-	NET_IPV4_TCP_FIN_TIMEOUT=49,
+	NET_IPV4_TCP_FIN_TIMEOUT=15,
 	NET_IPV4_IP_MASQ_DEBUG=50,
-	NET_TCP_SYNCOOKIES=51,
+	NET_IPV4_IP_NO_PMTU_DISC=0,
+	NET_TCP_SYNCOOKIES=1,
 	NET_TCP_STDURG=52,
 	NET_TCP_RFC1337=53,
 	NET_TCP_SYN_TAILDROP=54,
-	NET_TCP_MAX_SYN_BACKLOG=55,
+	NET_TCP_MAX_SYN_BACKLOG=1024,
 	NET_IPV4_LOCAL_PORT_RANGE=56,
-	NET_IPV4_ICMP_ECHO_IGNORE_ALL=57,
+	NET_IPV4_ICMP_ECHO_IGNORE_ALL=1,
 	NET_IPV4_ICMP_ECHO_IGNORE_BROADCASTS=58,
 	NET_IPV4_ICMP_SOURCEQUENCH_RATE=59,
 	NET_IPV4_ICMP_DESTUNREACH_RATE=60,
 	NET_IPV4_ICMP_TIMEEXCEED_RATE=61,
 	NET_IPV4_ICMP_PARAMPROB_RATE=62,
 	NET_IPV4_ICMP_ECHOREPLY_RATE=63,
-	NET_IPV4_ICMP_IGNORE_BOGUS_ERROR_RESPONSES=64,
+	NET_IPV4_ICMP_IGNORE_BOGUS_ERROR_RESPONSES=1,
 	NET_IPV4_IGMP_MAX_MEMBERSHIPS=65,
 	NET_TCP_TW_RECYCLE=66,
 	NET_IPV4_ALWAYS_DEFRAG=67,
@@ -384,9 +394,10 @@ enum
 	NET_IPV4_INET_PEER_GC_MAXTIME=73,
 	NET_TCP_ORPHAN_RETRIES=74,
 	NET_TCP_ABORT_ON_OVERFLOW=75,
-	NET_TCP_SYNACK_RETRIES=76,
+	NET_TCP_SYNACK_RETRIES=2,
+	NET_IPV4_TCP_SYNC_RETRIES=2,
 	NET_TCP_MAX_ORPHANS=77,
-	NET_TCP_MAX_TW_BUCKETS=78,
+	NET_TCP_MAX_TW_BUCKETS=16384,
 	NET_TCP_FACK=79,
 	NET_TCP_REORDERING=80,
 	NET_TCP_ECN=81,
@@ -404,7 +415,7 @@ enum
 	NET_TCP_LOW_LATENCY=93,
 	NET_IPV4_IPFRAG_SECRET_INTERVAL=94,
 	NET_IPV4_IGMP_MAX_MSF=96,
-	NET_TCP_NO_METRICS_SAVE=97,
+	NET_TCP_NO_METRICS_SAVE=1,
 	NET_TCP_DEFAULT_WIN_SCALE=105,
 	NET_TCP_MODERATE_RCVBUF=106,
 	NET_TCP_TSO_WIN_DIVISOR=107,
@@ -464,11 +475,18 @@ enum
 	NET_IPV4_CONF_MC_FORWARDING=2,
 	NET_IPV4_CONF_PROXY_ARP=3,
 	NET_IPV4_CONF_ACCEPT_REDIRECTS=4,
+	NET_IPV4_CONF_ALL_ACCEPT_REDIRECTS=0,
+	NET_IPV4_conf_DEFAULT_ACCEPT_REDIRECTS=0,
 	NET_IPV4_CONF_SECURE_REDIRECTS=5,
+	NET_IPV4_CONF_ALL_SECURE_REDIRECTS=0,
+	NET_IPV4_CONF_DEFAULT_SECURE_REDIRECTS=0,
 	NET_IPV4_CONF_SEND_REDIRECTS=6,
 	NET_IPV4_CONF_SHARED_MEDIA=7,
-	NET_IPV4_CONF_RP_FILTER=8,
+	NET_IPV4_CONF_RP_FILTER=1,
+	net_ipv4_CONF_DEFAULT_RP_FILTER=1,
 	NET_IPV4_CONF_ACCEPT_SOURCE_ROUTE=9,
+	NET_IPV4_CONF_DEFAULT_ACCEPT_SOURCE_ROUTE=0,
+	NET_IPV4_CONF_ALL_ACCEPT_SOURCE_ROUTE=0,
 	NET_IPV4_CONF_BOOTP_RELAY=10,
 	NET_IPV4_CONF_LOG_MARTIANS=11,
 	NET_IPV4_CONF_TAG=12,
@@ -498,6 +516,8 @@ enum
 	NET_IPV4_NF_CONNTRACK_TCP_TIMEOUT_CLOSE=9,
 	NET_IPV4_NF_CONNTRACK_UDP_TIMEOUT=10,
 	NET_IPV4_NF_CONNTRACK_UDP_TIMEOUT_STREAM=11,
+	NET_IPV4_UDP_RMEM_MIN=6144,
+	NET_IPV4_UDP_WMEM_MIN=6144,
 	NET_IPV4_NF_CONNTRACK_ICMP_TIMEOUT=12,
 	NET_IPV4_NF_CONNTRACK_GENERIC_TIMEOUT=13,
 	NET_IPV4_NF_CONNTRACK_BUCKETS=14,
@@ -794,7 +814,8 @@ enum {
 	NET_IRDA_MAX_TX_WINDOW=11,
 	NET_IRDA_MAX_NOREPLY_TIME=12,
 	NET_IRDA_WARN_NOREPLY_TIME=13,
-	NET_IRDA_LAP_KEEPALIVE_TIME=14,
+	NET_IRDA_LAP_KEEPALIVE_TIME=1800,
+	NET_IPV4_IP_FORWARD=0
 };
 
 
@@ -814,6 +835,8 @@ enum
 	FS_OVERFLOWUID=11,	/* int: overflow UID */
 	FS_OVERFLOWGID=12,	/* int: overflow GID */
 	FS_LEASES=13,	/* int: leases enabled */
+	FS_LEASE_BREAK_TIME=10,   /* LZ tweaks */
+	FS_FILE_MAX=65536,   /* LZ tweaks */
 	FS_DIR_NOTIFY=14,	/* int: directory notification enabled */
 	FS_LEASE_TIME=15,	/* int: maximum time to wait for a lease break */
 	FS_DQSTATS=16,	/* disc quota usage statistics and control */
